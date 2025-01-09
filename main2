@@ -1,0 +1,197 @@
+import MetaTrader5 as mt5
+import pandas as pd
+import time
+import logging
+import sys
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+def connect_to_mt5():
+    """Conecta con MetaTrader 5."""
+    if not mt5.initialize():
+        logging.error("Error al conectar con MetaTrader 5.")
+        return False
+    logging.info("Conexión exitosa con MetaTrader 5.")
+    return True
+
+
+def desconectar_mt5():
+    """Desconecta de MetaTrader 5."""
+    if mt5.shutdown():
+        logging.info("Desconexión exitosa de MetaTrader 5.")
+    else:
+        logging.error("Error al desconectar de MetaTrader 5.")
+
+
+def fetch_market_data(symbol, timeframe, limit):
+    """Obtiene datos históricos del mercado."""
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
+    if rates is None or len(rates) == 0:
+        logging.error(f"No se pudieron obtener datos históricos para {symbol}.")
+        return None
+    return pd.DataFrame(rates)
+
+
+def calculate_risk_and_capital_distribution(symbols, total_equity, risk_percentage):
+    """Calcula la distribución del capital según el porcentaje de riesgo."""
+    return total_equity * risk_percentage / 100 / len(symbols)
+
+
+def calculate_indicators(df):
+    """Calcula los indicadores técnicos."""
+    df['SMA'] = df['close'].rolling(window=14).mean()  # Media móvil simple de 14 periodos
+    df['RSI'] = 100 - (100 / (1 + (df['close'].diff().gt(0).rolling(window=14).sum() / 
+                                   df['close'].diff().lt(0).rolling(window=14).sum())))
+    return df
+
+
+def generate_signal(row):
+    """Genera una señal de trading."""
+    if row['RSI'] > 70:
+        return 'sell'  # Sobrecompra, señal de venta
+    elif row['RSI'] < 30:
+        return 'buy'  # Sobreventa, señal de compra
+    return 'hold'  # Mantener posición
+
+
+def execute_trade(latest_signal, symbol, total_balance, risk_percentage, symbols):
+    """Ejecuta operaciones en MetaTrader 5."""
+
+    # Calcular el capital por símbolo
+    capital_per_symbol = total_balance * risk_percentage / 100 / len(symbols)
+
+    # Obtener información del símbolo
+    tick_info = mt5.symbol_info_tick(symbol)
+    symbol_info = mt5.symbol_info(symbol)
+
+    if tick_info is None or symbol_info is None:
+        logging.error(f"Error al obtener información del tick o símbolo para {symbol}.")
+        return False
+
+    # Calcular el precio según la señal
+    price = tick_info.ask if latest_signal == 'buy' else tick_info.bid
+    volume = capital_per_symbol / price
+
+    # Validar los límites de volumen
+    lot_min = symbol_info.lot_min or 0.01  # Volumen mínimo
+    lot_step = symbol_info.lot_step or 0.01  # Incremento del volumen
+    volume = max(volume, lot_min)  # Asegurarse de que no sea menor que lot_min
+    volume = round(volume / lot_step) * lot_step  # Asegurarse de que sea múltiplo de lot_step
+
+    # Verificar que el volumen sea válido
+    if volume < lot_min:
+        logging.error(f"El volumen calculado ({volume}) para {symbol} es menor que el mínimo permitido ({lot_min}).")
+        return False
+
+    # Determinar si es compra o venta
+    trade_type = mt5.ORDER_BUY if latest_signal == 'buy' else mt5.ORDER_SELL
+
+    # Configurar la solicitud
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": volume,
+        "type": trade_type,
+        "price": price,
+        "deviation": 20,
+        "magic": 234000,
+        "comment": "Robot de trading",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    # Enviar la solicitud
+    result = mt5.order_send(request)
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        logging.error(f"Error al ejecutar la operación: {result.retcode}, {result.comment}")
+        return False
+
+    logging.info(f"Operación ejecutada: {latest_signal} en {symbol}.")
+    return True
+
+
+def log_symbol_info(symbol):
+    """Registra la información del símbolo para depuración."""
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        logging.error(f"No se pudo obtener información del símbolo: {symbol}")
+        return
+    logging.info(f"Información del símbolo {symbol}:")
+    logging.info(f"  lot_min: {symbol_info.lot_min}")
+    logging.info(f"  lot_max: {symbol_info.lot_max}")
+    logging.info(f"  lot_step: {symbol_info.lot_step}")
+    logging.info(f"  trade_tick_size: {symbol_info.trade_tick_size}")
+    logging.info(f"  trade_tick_value: {symbol_info.trade_tick_value}")
+
+
+def main():
+    """Función principal del programa."""
+    if not connect_to_mt5():
+        return
+
+    symbols = ["USDMXN"]  # Lista de pares de divisas
+    timeframe = mt5.TIMEFRAME_H1  # Temporalidad
+    limit = 200  # Número de barras a descargar
+
+    account_info = mt5.account_info()
+    if account_info is None:
+        logging.error("Error al obtener información de la cuenta.")
+        desconectar_mt5()
+        return
+
+    total_equity = account_info.equity
+    logging.info(f"Capital real de la cuenta: {total_equity}")
+
+    try:
+        risk_percentage = float(input("Introduce el porcentaje de capital a distribuir entre los símbolos (0-100): "))
+        if not (0 <= risk_percentage <= 100):
+            logging.error("Porcentaje inválido, debe estar entre 0 y 100.")
+            desconectar_mt5()
+            return
+    except ValueError:
+        logging.error("Entrada inválida. Introduce un número válido.")
+        desconectar_mt5()
+        return
+
+    # Registrar información de los símbolos
+    for symbol in symbols:
+        log_symbol_info(symbol)
+
+    capital_per_symbol = calculate_risk_and_capital_distribution(symbols, total_equity, risk_percentage)
+    logging.info(f"Capital a distribuir por símbolo: {capital_per_symbol}")
+
+    try:
+        while True:
+            for symbol in symbols:
+                df = fetch_market_data(symbol, timeframe, limit)
+                if df is None:
+                    continue
+
+                df = calculate_indicators(df)
+                df['signal'] = df.apply(generate_signal, axis=1)
+                latest_signal = df['signal'].iloc[-1]
+
+                logging.info(f"Generando señal para {symbol}: {latest_signal}")
+                trade_result = execute_trade(latest_signal, symbol, total_equity, risk_percentage, symbols)
+
+                if not trade_result:
+                    logging.error(f"Falló la ejecución de la operación para {symbol}.")
+                    last_error = mt5.last_error()
+                    logging.error(f"Detalles del error: {last_error}")
+
+                time.sleep(5)
+
+            time.sleep(60)
+    except KeyboardInterrupt:
+        logging.info("Ejecución interrumpida por el usuario.")
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
+    finally:
+        desconectar_mt5()
+
+
+if __name__ == "__main__":
+    main()
