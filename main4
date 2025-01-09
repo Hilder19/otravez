@@ -241,10 +241,7 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0):
         return None
 
     # Verificar si 'contract_size' está disponible
-    contract_size = getattr(symbol_info, 'contract_size', None)
-    if not contract_size:
-        print(f"Advertencia: 'contract_size' no encontrado para {symbol}, usando un valor predeterminado.")
-        contract_size = 1  # Valor predeterminado
+    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor predeterminado
 
     # Calcular el precio actual
     price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
@@ -252,13 +249,22 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0):
     # Calcular el volumen del lote usando el capital asignado y el riesgo por operación
     lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
 
-    # Ajustar el volumen al rango permitido
-    if lot_size < symbol_info.volume_min or lot_size > symbol_info.volume_max:
-        print(f"Advertencia: El tamaño del lote calculado {lot_size} está fuera del rango permitido.")
-        lot_size = max(symbol_info.volume_min, min(lot_size, symbol_info.volume_max))
+    # Validar el rango del volumen
+    if lot_size < symbol_info.volume_min:
+        lot_size = symbol_info.volume_min
+        print(f"Ajustando el tamaño del lote al mínimo permitido: {lot_size}")
+    elif lot_size > symbol_info.volume_max:
+        lot_size = symbol_info.volume_max
+        print(f"Ajustando el tamaño del lote al máximo permitido: {lot_size}")
 
-    # Asegurarse de que el tamaño del lote cumpla con el paso permitido
-    lot_size = round(lot_size, int(-symbol_info.volume_step.as_integer_ratio()[1]))
+    # Asegurar que el volumen cumple con los pasos permitidos
+    step = symbol_info.volume_step
+    lot_size = round(lot_size / step) * step
+
+    # Validar nuevamente después de redondear
+    if lot_size < symbol_info.volume_min or lot_size > symbol_info.volume_max:
+        print(f"Error: El tamaño del lote ajustado {lot_size} está fuera del rango permitido.")
+        return None
 
     # Crear el request para la orden
     request = {
@@ -284,7 +290,6 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0):
         print(f"Operación {latest_signal} ejecutada correctamente.")
         ticket = result.order
         return ticket
-
 
 
 
