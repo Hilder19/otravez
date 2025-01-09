@@ -1,0 +1,344 @@
+def cerrar_conexion(sig, frame):
+    """Manejador de la señal Ctrl + C para cerrar la conexión correctamente."""
+    logging.info("\nCerrando conexión con MT5...")
+    mt5.shutdown()  # Cerrar MT5 de manera segura
+    logging.info("Conexión cerrada.")
+    exit(0)  # Salir del programa
+
+
+# Registrar el manejador de la señal Ctrl + C
+signal.signal(signal.SIGINT, cerrar_conexion)
+
+
+def connect_to_mt5():
+    """Solicita credenciales al usuario y establece conexión con MetaTrader 5."""
+    try:
+        cuenta = int(input("Introduce tu número de cuenta: "))
+        servidor = input("Introduce el nombre del servidor: ")
+        contraseña = getpass.getpass("Introduce tu contraseña: ")  # Ocultar la contraseña
+    except ValueError:
+        logging.error("El número de cuenta debe ser un número entero.")
+        return False
+
+    # Inicializar MT5
+    if not mt5.initialize():
+        logging.error("Error al inicializar MT5: %s", mt5.last_error())
+        return False
+
+    # Iniciar sesión
+    if not mt5.login(cuenta, password=contraseña, server=servidor):
+        logging.error("Error al iniciar sesión: %s", mt5.last_error())
+        mt5.shutdown()
+        return False
+
+    logging.info("Conexión exitosa a MT5.")
+    return True
+
+
+def get_account_equity():
+    """Obtiene el capital de la cuenta."""
+    account_info = mt5.account_info()
+    if account_info is None:
+        logging.error("No se pudo obtener la información de la cuenta.")
+        return None
+    return account_info.equity
+
+
+def calculate_risk_and_capital_distribution(symbols):
+    """
+    Calcula el riesgo y distribuye el capital según el porcentaje definido por el usuario.
+    """
+    total_equity = get_account_equity()
+    if total_equity is None:
+        logging.error("No se pudo obtener el equity de la cuenta.")
+        return None
+
+    try:
+        # Solicitar al usuario el porcentaje del capital para asignar
+        risk_percentage = float(input("Introduce el porcentaje del capital para asignar a los símbolos (0-100): "))
+        if not 0 <= risk_percentage <= 100:
+            logging.error("El porcentaje debe estar entre 0 y 100.")
+            return None
+    except ValueError:
+        logging.error("Por favor, introduce un número válido.")
+        return None
+
+    # Calcular el capital por cada símbolo
+    number_of_symbols = len(symbols)
+    if number_of_symbols == 0:
+        logging.error("La lista de símbolos está vacía.")
+        return None
+
+    capital_per_symbol = (total_equity * risk_percentage / 100) / number_of_symbols
+    logging.info(f"El capital asignado a cada símbolo será: {capital_per_symbol:.2f}")
+
+    # Crear un diccionario con el capital para cada símbolo
+    capital_distribution = {symbol: capital_per_symbol for symbol in symbols}
+    return capital_distribution
+
+
+def fetch_market_data(symbol, timeframe, limit=1):
+    """Obtiene datos de mercado desde MT5."""
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
+    if rates is None:
+        logging.error(f"Error al obtener datos para {symbol}: {mt5.last_error()}")
+        return None
+
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    return df
+
+
+def calculate_indicators(df):
+    """Calcula indicadores técnicos como MACD, RSI, ADX y Bollinger Bands utilizando pandas."""
+    # Calculando MACD
+    df['ema_fast'] = df['close'].ewm(span=12, adjust=False).mean()
+    df['ema_slow'] = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = df['ema_fast'] - df['ema_slow']
+    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+    # Suavizado del MACD para mayor efectividad
+    df['macd_diff'] = df['macd'] - df['macd_signal']
+
+    # Calculando RSI con un suavizado adaptativo
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # Calculando ADX (Asegurando que ADX también suba)
+    df['high_low'] = df['high'] - df['low']
+    df['high_close'] = abs(df['high'] - df['close'].shift())
+    df['low_close'] = abs(df['low'] - df['close'].shift())
+    df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+    df['atr'] = df['tr'].rolling(window=14).mean()
+
+    df['+dm'] = (df['high'].diff() > df['high'].diff().shift(-1)).astype(float) * df['high'].diff()
+    df['-dm'] = (df['low'].diff() > df['low'].diff().shift(-1)).astype(float) * df['low'].diff()
+    df['+dm'] = df['+dm'].where(df['+dm'] > 0, 0)
+    df['-dm'] = df['-dm'].where(df['-dm'] > 0, 0)
+
+    df['+di'] = 100 * (df['+dm'].rolling(window=14).sum() / df['atr'])
+    df['-di'] = 100 * (df['-dm'].rolling(window=14).sum() / df['atr'])
+
+    df['adx'] = 100 * (df['+di'] - df['-di']).abs() / (df['+di'] + df['-di'])
+    df['adx_slope'] = df['adx'].diff()  # Verificamos si el ADX está subiendo
+
+    # Calculando Bollinger Bands
+    df['sma'] = df['close'].rolling(window=20).mean()
+    df['std'] = df['close'].rolling(window=20).std()
+    df['upper_band'] = df['sma'] + (df['std'] * 2)
+    df['lower_band'] = df['sma'] - (df['std'] * 2)
+
+    # Evitar valores nulos
+    df.fillna(0, inplace=True)
+    
+    return df
+
+def generate_signal(row):
+    """Genera señales de compra o venta basadas en indicadores con Bollinger Bands mejorado, considerando que al menos dos indicadores deben coincidir."""
+    
+    # Inicializar el contador de condiciones cumplidas
+    buy_conditions = 0
+    sell_conditions = 0
+
+    # Condición de compra (al menos 2 indicadores deben cumplir)
+    if row['macd_diff'] > 0:  # El MACD debe estar por encima de la señal
+        buy_conditions += 1
+        print(f"MACD positivo: {row['macd_diff']}")
+
+    if row['rsi'] < 30:  # El RSI debe estar en sobreventa (indicación de posible rebote)
+        buy_conditions += 1
+        print(f"RSI en sobreventa: {row['rsi']}")
+
+    if row['adx'] > 25:  # El ADX debe indicar una tendencia fuerte
+        buy_conditions += 1
+        print(f"ADX fuerte: {row['adx']}")
+
+    if row['adx_slope'] > 0:  # El ADX debe estar aumentando, lo que indica que la tendencia se fortalece
+        buy_conditions += 1
+        print(f"ADX en aumento: {row['adx_slope']}")
+
+    if row['close'] < row['lower_band']:  # El precio debe estar cerca o debajo de la banda inferior
+        buy_conditions += 1
+        print(f"Precio por debajo de la banda inferior: {row['close']}")
+
+    if (row['close'] - row['lower_band']) < (row['upper_band'] - row['lower_band']) * 0.4:  # El precio debe estar cerca de la banda inferior
+        buy_conditions += 1
+        print(f"Precio cerca de la banda inferior: {row['close']}")
+
+    # Condición de venta (al menos 2 indicadores deben cumplir)
+    if row['macd_diff'] < 0:  # El MACD debe estar por debajo de la señal
+        sell_conditions += 1
+        print(f"MACD negativo: {row['macd_diff']}")
+
+    if row['rsi'] > 70:  # El RSI debe estar en sobrecompra (indicación de posible corrección)
+        sell_conditions += 1
+        print(f"RSI en sobrecompra: {row['rsi']}")
+
+    if row['adx'] > 25:  # El ADX debe indicar una tendencia fuerte
+        sell_conditions += 1
+        print(f"ADX fuerte: {row['adx']}")
+
+    if row['adx_slope'] > 0:  # El ADX debe estar aumentando, lo que indica que la tendencia se fortalece
+        sell_conditions += 1
+        print(f"ADX en aumento: {row['adx_slope']}")
+
+    if row['close'] > row['upper_band']:  # El precio debe estar cerca o por encima de la banda superior
+        sell_conditions += 1
+        print(f"Precio por encima de la banda superior: {row['close']}")
+
+    if (row['upper_band'] - row['close']) < (row['upper_band'] - row['lower_band']) * 0.4:  # El precio debe estar cerca de la banda superior
+        sell_conditions += 1
+        print(f"Precio cerca de la banda superior: {row['close']}")
+
+    # Generar señales según el número de condiciones cumplidas
+    if buy_conditions >= 2:
+        print(f"Señal de compra generada. Condiciones de compra cumplidas: {buy_conditions}")
+        return 'buy'
+    elif sell_conditions >= 2:
+        print(f"Señal de venta generada. Condiciones de venta cumplidas: {sell_conditions}")
+        return 'sell'
+
+    # Si no se cumplen las condiciones de compra o venta, no hay señal
+    print(f"No hay señal. Condiciones de compra: {buy_conditions}, Condiciones de venta: {sell_conditions}")
+    return 'hold'
+
+
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0):
+    """
+    Ejecuta operaciones en MetaTrader 5 y calcula automáticamente el volumen del lote 
+    basado en el capital asignado y el riesgo por operación.
+
+    Parameters:
+        latest_signal (str): Señal de compra ('buy') o venta ('sell').
+        symbol (str): Símbolo del mercado.
+        capital_assigned (float): Capital asignado para el símbolo.
+        risk_per_trade (float): Porcentaje del capital a arriesgar por operación (por defecto 1%).
+
+    Returns:
+        int: El ticket de la operación si se ejecuta correctamente, None si falla.
+    """
+    # Asignar el tipo de orden basado en la señal
+    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
+
+    if order_type is None:
+        print("No se ejecutó ninguna operación, señal inválida.")
+        return None
+
+    # Obtener información del símbolo
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: No se encontró información para el símbolo {symbol}.")
+        return None
+
+    # Verificar si 'contract_size' está disponible
+    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor predeterminado
+
+    # Calcular el precio actual
+    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+
+    # Calcular el volumen del lote usando el capital asignado y el riesgo por operación
+    lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
+
+    # Validar el rango del volumen
+    if lot_size < symbol_info.volume_min:
+        lot_size = symbol_info.volume_min
+        print(f"Ajustando el tamaño del lote al mínimo permitido: {lot_size}")
+    elif lot_size > symbol_info.volume_max:
+        lot_size = symbol_info.volume_max
+        print(f"Ajustando el tamaño del lote al máximo permitido: {lot_size}")
+
+    # Asegurar que el volumen cumple con los pasos permitidos
+    step = symbol_info.volume_step
+    lot_size = round(lot_size / step) * step
+
+    # Validar nuevamente después de redondear
+    if lot_size < symbol_info.volume_min or lot_size > symbol_info.volume_max:
+        print(f"Error: El tamaño del lote ajustado {lot_size} está fuera del rango permitido.")
+        return None
+
+    # Crear el request para la orden
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": order_type,
+        "price": price,
+        "deviation": 20,
+        "magic": 234000,
+        "comment": "Robot de trading",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    # Enviar la orden
+    result = mt5.order_send(request)
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"Error al ejecutar la operación: {result.retcode}, detalle: {result.comment}")
+        return None
+    else:
+        print(f"Operación {latest_signal} ejecutada correctamente.")
+        ticket = result.order
+        return ticket
+
+
+def show_trade_profit(ticket):
+    """Muestra las ganancias o pérdidas de la operación recién ejecutada."""
+    posiciones = mt5.positions_get()
+    if posiciones is None:
+        logging.error(f"Error al obtener posiciones: {mt5.last_error()}")
+        return
+
+    resultados = [(pos.symbol, pos.profit) for pos in posiciones]
+
+    for symbol, profit in resultados:
+        logging.info(f"{symbol}: Ganancia/Pérdida: {profit:.2f}")
+
+
+def main():
+    """Función principal."""
+    if not connect_to_mt5():
+        return
+
+    symbols = ["USDMXNm"]
+    timeframe = mt5.TIMEFRAME_M1
+    capital_assigned = calculate_risk_and_capital_distribution(symbols)
+    if capital_assigned is None:
+        return
+
+    while True:
+        for symbol in symbols:
+            # Obtener datos de mercado
+            df = fetch_market_data(symbol, timeframe)
+            if df is None:
+                continue
+
+            # Calcular indicadores
+            df = calculate_indicators(df)
+            df['signal'] = df.apply(generate_signal, axis=1)
+
+            # Generar la última señal
+            latest_signal = df['signal'].iloc[-1]
+
+            # Ejecutar operación si hay una señal válida
+            if latest_signal in ['buy', 'sell']:
+                # Usar el capital asignado al símbolo actual
+                ticket = execute_trade(latest_signal, symbol, capital_assigned[symbol], risk_per_trade=1.0)
+
+                if ticket:
+                    # Mostrar ganancias/pérdidas de la operación
+                    show_trade_profit(ticket)
+
+        # Esperar antes de repetir el ciclo
+        time.sleep(60)
+    # Cerrar conexión
+    mt5.shutdown()
+
+if __name__ == "__main__":
+    main()
