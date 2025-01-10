@@ -8,13 +8,37 @@ def reconnect_to_mt5():
     mt5.shutdown()
     time.sleep(5)
     if not mt5.initialize():
+        print("Error al reconectar a MT5.")
         return False
     return True
+
+def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info):
+    """
+    Ajusta SL y TP para cumplir con las restricciones de distancia mínima del broker.
+    """
+    digits = symbol_info.digits
+
+    # Asegurar que SL cumple con la distancia mínima
+    if abs(current_price - final_sl) < stop_level:
+        if final_sl < current_price:  # Para Buy
+            final_sl = current_price - stop_level
+        else:  # Para Sell
+            final_sl = current_price + stop_level
+        final_sl = round(final_sl, digits)
+
+    # Asegurar que TP cumple con la distancia mínima
+    if abs(new_tp - current_price) < stop_level:
+        if new_tp > current_price:  # Para Buy
+            new_tp = current_price + stop_level
+        else:  # Para Sell
+            new_tp = current_price - stop_level
+        new_tp = round(new_tp, digits)
+
+    return final_sl, new_tp
 
 def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5):
     """
     Modifica SL y TP dinámicamente o cierra posiciones abiertas para un símbolo.
-    Incluye un trailing stop y maneja reconexiones.
     Ajusta automáticamente el trailing_distance al mínimo permitido por el broker si es demasiado pequeño.
     """
     if not mt5.initialize():
@@ -31,6 +55,7 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
 
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
+            print(f"No hay posiciones abiertas para {symbol}.")
             break
 
         symbol_info = mt5.symbol_info(symbol)
@@ -42,6 +67,7 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
         stop_level = symbol_info.trade_stops_level * symbol_info.point
 
         for pos in positions:
+            # Obtener el precio actual
             current_price = mt5.symbol_info_tick(symbol).ask if pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid
 
             # Calcular el SL estático basado en sl_percentage
@@ -73,14 +99,8 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             final_sl = round(final_sl, symbol_info.digits)
             new_tp = round(new_tp, symbol_info.digits)
 
-            # Verificar restricciones del broker
-            if abs(current_price - final_sl) < stop_level:
-                print(f"SL rechazado para posición {pos.ticket}: Distancia mínima no cumplida ({stop_level}).")
-                continue
-
-            if abs(new_tp - current_price) < stop_level:
-                print(f"TP rechazado para posición {pos.ticket}: Distancia mínima no cumplida ({stop_level}).")
-                continue
+            # Ajustar SL/TP para cumplir con las restricciones del broker
+            final_sl, new_tp = adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info)
 
             # Crear la solicitud de modificación
             modify_request = {
@@ -93,9 +113,13 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
 
             # Enviar la solicitud de modificación
             modify_result = mt5.order_send(modify_request)
-            if modify_result.retcode != mt5.TRADE_RETCODE_DONE:
+            if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
+                print(f"SL/TP modificados correctamente para posición {pos.ticket}.")
+            else:
                 print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
+                print(f"Detalles del error: {modify_result}")
 
-            time.sleep(0.2)  # Reducir la saturación
+            time.sleep(0.2)  # Reducir la saturación de solicitudes
 
     mt5.shutdown()
+
