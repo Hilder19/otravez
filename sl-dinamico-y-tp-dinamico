@@ -30,10 +30,13 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5, verbose=False):
     """
     Modifica SL y TP dinámicamente o cierra posiciones abiertas para un símbolo.
+    Detecta ganancias y cierra la operación si el profit retrocede.
     """
     if not mt5.initialize():
         print("MetaTrader 5 no pudo inicializarse.")
         return
+
+    profit_max = {}  # Almacena el profit máximo alcanzado para cada operación
 
     while True:
         # Verificar la conexión
@@ -96,6 +99,34 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             # Ajustar SL/TP
             final_sl, new_tp = adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info)
 
+            # Actualizar el profit máximo
+            if pos.ticket not in profit_max:
+                profit_max[pos.ticket] = pos.profit  # Inicializar con el profit actual
+            else:
+                profit_max[pos.ticket] = max(profit_max[pos.ticket], pos.profit)  # Actualizar al máximo alcanzado
+
+            # Cerrar la operación si el profit retrocede
+            if pos.profit < profit_max[pos.ticket]:
+                close_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "position": pos.ticket,
+                    "volume": pos.volume,
+                    "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                    "price": current_price,
+                    "deviation": 20,
+                }
+                close_result = mt5.order_send(close_request)
+                if close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                    if verbose:
+                        print(f"Operación {pos.ticket} cerrada por retroceso de ganancias.")
+                    profit_max.pop(pos.ticket, None)  # Eliminar el registro del profit máximo
+                else:
+                    if verbose:
+                        print(f"Error cerrando operación {pos.ticket}: {close_result.retcode}")
+                continue
+
+            # Crear la solicitud de modificación de SL/TP
             modify_request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "symbol": symbol,
