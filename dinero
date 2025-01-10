@@ -22,6 +22,7 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
         return
 
     while True:
+        # Verificar la conexión
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
             if not reconnect_to_mt5():
@@ -37,19 +38,19 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             print(f"Error: No se pudo obtener información del símbolo {symbol}.")
             return
 
-        # Obtener la distancia mínima permitida
+        # Obtener la distancia mínima permitida por el broker
         stop_level = symbol_info.trade_stops_level * symbol_info.point
 
         for pos in positions:
             current_price = mt5.symbol_info_tick(symbol).ask if pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid
 
-            # Calcular el SL estático
+            # Calcular el SL estático basado en sl_percentage
             sl_static = (
                 current_price * (1 - sl_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
                 else current_price * (1 + sl_percentage / 100)
             )
 
-            # Ajustar la distancia del trailing stop
+            # Ajustar la distancia del trailing stop al mínimo permitido
             adjusted_trailing_distance = max(trailing_distance / 100 * current_price, stop_level)
             trailing_sl = (
                 max(pos.price_open, current_price) - adjusted_trailing_distance if pos.type == mt5.ORDER_TYPE_BUY
@@ -62,21 +63,23 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
                 else min(sl_static, trailing_sl)
             )
 
-            # Calcular el nuevo TP
+            # Calcular el nuevo Take Profit (TP)
             new_tp = (
                 current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
                 else current_price * (1 - tp_percentage / 100)
             )
 
-            # Redondear SL y TP
+            # Redondear SL y TP a la cantidad de dígitos permitidos por el símbolo
             final_sl = round(final_sl, symbol_info.digits)
             new_tp = round(new_tp, symbol_info.digits)
 
             # Verificar restricciones del broker
             if abs(current_price - final_sl) < stop_level:
+                print(f"SL rechazado para posición {pos.ticket}: Distancia mínima no cumplida ({stop_level}).")
                 continue
 
             if abs(new_tp - current_price) < stop_level:
+                print(f"TP rechazado para posición {pos.ticket}: Distancia mínima no cumplida ({stop_level}).")
                 continue
 
             # Crear la solicitud de modificación
