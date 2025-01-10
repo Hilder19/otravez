@@ -1,0 +1,122 @@
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0):
+    """
+    Ejecuta operaciones en MetaTrader 5 y calcula automáticamente el volumen del lote 
+    basado en el capital asignado y el riesgo por operación.
+
+    Parameters:
+        latest_signal (str): Señal de compra ('buy') o venta ('sell').
+        symbol (str): Símbolo del mercado.
+        capital_assigned (float): Capital asignado para el símbolo.
+        risk_per_trade (float): Porcentaje del capital a arriesgar por operación (por defecto 1%).
+
+    Returns:
+        int: El ticket de la operación si se ejecuta correctamente, None si falla.
+    """
+    # Asignar el tipo de orden basado en la señal
+    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
+
+    if order_type is None:
+        print("No se ejecutó ninguna operación, señal inválida.")
+        return None
+
+    # Obtener información del símbolo
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: No se encontró información para el símbolo {symbol}.")
+        return None
+
+    # Verificar si 'contract_size' está disponible
+    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor predeterminado
+
+    # Calcular el precio actual
+    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+
+    # Calcular el volumen del lote usando el capital asignado y el riesgo por operación
+    lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
+
+    # Validar el rango del volumen
+    if lot_size < symbol_info.volume_min:
+        lot_size = symbol_info.volume_min
+        print(f"Ajustando el tamaño del lote al mínimo permitido: {lot_size}")
+    elif lot_size > symbol_info.volume_max:
+        lot_size = symbol_info.volume_max
+        print(f"Ajustando el tamaño del lote al máximo permitido: {lot_size}")
+
+    # Asegurar que el volumen cumple con los pasos permitidos
+    step = symbol_info.volume_step
+    lot_size = round(lot_size / step) * step
+
+    # Validar nuevamente después de redondear
+    if lot_size < symbol_info.volume_min or lot_size > symbol_info.volume_max:
+        print(f"Error: El tamaño del lote ajustado {lot_size} está fuera del rango permitido.")
+        return None
+
+    # Crear el request para la orden
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": order_type,
+        "price": price,
+        "deviation": 20,
+        "magic": 234000,
+        "comment": "Robot de trading",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    # Enviar la orden
+    result = mt5.order_send(request)
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"Error al ejecutar la operación: {result.retcode}, detalle: {result.comment}")
+        return None
+    else:
+        print(f"Operación {latest_signal} ejecutada correctamente.")
+        ticket = result.order
+        return ticket 
+
+    
+
+def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5):
+    """
+    Cierra posiciones abiertas con base en SL/TP dinámicos.
+    """
+
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None or len(positions) == 0:
+        print(f"No hay posiciones abiertas para {symbol}.")
+        return
+
+    # Obtener información del símbolo para acceder a los dígitos
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: No se pudo obtener información del símbolo {symbol}.")
+        return
+
+    for pos in positions:
+        # Lógica para determinar el SL y TP dinámicos (ajustar según lo que desees)
+        current_price = mt5.symbol_info_tick(symbol).ask if pos.type == 0 else mt5.symbol_info_tick(symbol).bid
+
+        # Aquí ajustas el SL/TP dinámico, según tu lógica
+        new_sl = current_price * (1 - sl_percentage / 100) if pos.type == 0 else current_price * (1 + sl_percentage / 100)
+        new_tp = current_price * (1 + tp_percentage / 100) if pos.type == 0 else current_price * (1 - tp_percentage / 100)
+
+        # Redondear según la cantidad de dígitos que soporte el símbolo
+        new_sl = round(new_sl, symbol_info.digits)
+        new_tp = round(new_tp, symbol_info.digits)
+
+        # Modificar la posición si el SL/TP cambia
+        modify_request = {
+            "action": mt5.TRADE_ACTION_DEAL,  # OTRA OPCIÓN: TRADE_ACTION_CLOSE_BY dependiendo de tu lógica
+            "symbol": symbol,
+            "position": pos.ticket,
+            "sl": new_sl,
+            "tp": new_tp,
+        }
+
+        modify_result = mt5.order_send(modify_request)
+        if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"Posición cerrada correctamente: {pos.ticket}")
+        else:
+            print(f"Error cerrando la posición ({pos.ticket}): {modify_result.retcode}")
