@@ -1,0 +1,118 @@
+# file: dynamic_sl_tp.py
+
+import MetaTrader5 as mt5
+import time
+
+def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info):
+    """
+    Ajusta SL y TP para cumplir con las restricciones de distancia mínima del broker.
+    """
+    digits = symbol_info.digits
+
+    # Asegurar que SL cumple con la distancia mínima
+    if abs(current_price - final_sl) < stop_level:
+        if final_sl < current_price:  # Para Buy
+            final_sl = current_price - stop_level
+        else:  # Para Sell
+            final_sl = current_price + stop_level
+        final_sl = round(final_sl, digits)
+
+    # Asegurar que TP cumple con la distancia mínima
+    if abs(new_tp - current_price) < stop_level:
+        if new_tp > current_price:  # Para Buy
+            new_tp = current_price + stop_level
+        else:  # Para Sell
+            new_tp = current_price - stop_level
+        new_tp = round(new_tp, digits)
+
+    return final_sl, new_tp
+
+def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5, verbose=False):
+    """
+    Modifica SL y TP dinámicamente o cierra posiciones abiertas para un símbolo.
+    """
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    while True:
+        # Verificar la conexión
+        if not (mt5.terminal_info() and mt5.terminal_info().connected):
+            print("Reconectando a MT5...")
+            mt5.shutdown()
+            time.sleep(5)
+            mt5.initialize()
+
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
+            if verbose:
+                print(f"No hay posiciones abiertas para {symbol}.")
+            break
+
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            print(f"Error: No se pudo obtener información del símbolo {symbol}.")
+            return
+
+        stop_level = symbol_info.trade_stops_level * symbol_info.point
+
+        for pos in positions:
+            tick_info = mt5.symbol_info_tick(symbol)
+            if not tick_info:
+                if verbose:
+                    print(f"Error obteniendo precios para {symbol}.")
+                continue
+
+            current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
+
+            # SL estático basado en porcentaje
+            sl_static = (
+                current_price * (1 - sl_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
+                else current_price * (1 + sl_percentage / 100)
+            )
+
+            # Trailing Stop dinámico
+            trailing_sl = (
+                max(pos.price_open, current_price) - trailing_distance / 100 * current_price
+                if pos.type == mt5.ORDER_TYPE_BUY else
+                min(pos.price_open, current_price) + trailing_distance / 100 * current_price
+            )
+
+            # Evitar que el Trailing Stop retroceda
+            if pos.sl:
+                trailing_sl = max(trailing_sl, pos.sl) if pos.type == mt5.ORDER_TYPE_BUY else min(trailing_sl, pos.sl)
+
+            final_sl = (
+                max(sl_static, trailing_sl) if pos.type == mt5.ORDER_TYPE_BUY
+                else min(sl_static, trailing_sl)
+            )
+
+            # Nuevo Take Profit (TP)
+            new_tp = (
+                current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
+                else current_price * (1 - tp_percentage / 100)
+            )
+
+            # Ajustar SL/TP
+            final_sl, new_tp = adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info)
+
+            modify_request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": symbol,
+                "position": pos.ticket,
+                "sl": final_sl,
+                "tp": new_tp,
+            }
+
+            modify_result = mt5.order_send(modify_request)
+            if modify_result.retcode != mt5.TRADE_RETCODE_DONE and verbose:
+                print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
+
+            time.sleep(0.5)
+
+        if verbose:
+            print("Actualización completada para todas las posiciones activas.")
+        
+        time.sleep(10)  # Reducir la frecuencia de solicitudes para evitar saturación
+
+    mt5.shutdown()
