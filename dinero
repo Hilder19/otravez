@@ -36,7 +36,7 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 
     return final_sl, new_tp
 
-def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5):
+def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5, verbose=False):
     """
     Modifica SL y TP dinámicamente o cierra posiciones abiertas para un símbolo.
     Ajusta automáticamente el trailing_distance al mínimo permitido por el broker si es demasiado pequeño.
@@ -55,7 +55,8 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
 
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
-            print(f"No hay posiciones abiertas para {symbol}.")
+            if verbose:
+                print(f"No hay posiciones abiertas para {symbol}.")
             break
 
         symbol_info = mt5.symbol_info(symbol)
@@ -65,10 +66,18 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
 
         # Obtener la distancia mínima permitida por el broker
         stop_level = symbol_info.trade_stops_level * symbol_info.point
+        successful_updates = 0
+        failed_updates = 0
 
         for pos in positions:
             # Obtener el precio actual
-            current_price = mt5.symbol_info_tick(symbol).ask if pos.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid
+            tick_info = mt5.symbol_info_tick(symbol)
+            if not tick_info or tick_info.ask <= 0 or tick_info.bid <= 0:
+                if verbose:
+                    print(f"Error: Información de precios inválida para {symbol}.")
+                continue
+
+            current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
 
             # Calcular el SL estático basado en sl_percentage
             sl_static = (
@@ -114,12 +123,16 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             # Enviar la solicitud de modificación
             modify_result = mt5.order_send(modify_request)
             if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"SL/TP modificados correctamente para posición {pos.ticket}.")
+                successful_updates += 1
             else:
-                print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
-                print(f"Detalles del error: {modify_result}")
+                failed_updates += 1
+                if verbose:
+                    print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
 
             time.sleep(0.2)  # Reducir la saturación de solicitudes
 
-    mt5.shutdown()
+        # Mostrar un resumen de las modificaciones realizadas
+        if verbose:
+            print(f"{successful_updates} SL/TP modificados correctamente, {failed_updates} fallidos para {symbol}.")
 
+    mt5.shutdown()
