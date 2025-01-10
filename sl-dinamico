@@ -3,7 +3,8 @@ import time
 
 def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5):
     """
-    Ejecuta operaciones en MetaTrader 5 con TP y SL dinámicos.
+    Ejecuta operaciones en MetaTrader 5 con SL y TP dinámicos.
+    Si se cierra una posición por SL/TP, se abre una nueva operación automáticamente.
     """
 
     # Validar inicialización de MetaTrader 5
@@ -13,15 +14,18 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
 
     while True:
         positions = mt5.positions_get(symbol=symbol)
+
+        # Si no hay posiciones abiertas, abre una nueva operación
         if not positions:
             print(f"No hay posiciones abiertas para {symbol}. Intentando abrir una nueva operación...")
 
-            # Validar señal
+            # Determinar tipo de orden (compra o venta)
             order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
             if order_type is None:
                 print("Error: Señal inválida.")
                 return None
 
+            # Recuperar información del símbolo y precios actuales
             symbol_info = mt5.symbol_info(symbol)
             if not symbol_info:
                 print(f"Error: Información del símbolo {symbol} no encontrada.")
@@ -33,17 +37,20 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
                 return None
 
             price = tick.ask if latest_signal == 'buy' else tick.bid
+
+            # Calcular tamaño del lote
             lot_size = (capital_assigned * (risk_per_trade / 100)) / price
             lot_size = round(lot_size / symbol_info.volume_step) * symbol_info.volume_step
             lot_size = max(symbol_info.volume_min, min(lot_size, symbol_info.volume_max))
 
-            # Validar SL y TP mínimos permitidos
+            # Calcular SL y TP
             sl_price = price * (1 - sl_percentage / 100) if latest_signal == 'buy' else price * (1 + sl_percentage / 100)
             tp_price = price * (1 + tp_percentage / 100) if latest_signal == 'buy' else price * (1 - tp_percentage / 100)
 
             sl_price = max(sl_price, price - symbol_info.stop_level * symbol_info.point)
             tp_price = min(tp_price, price + symbol_info.stop_level * symbol_info.point)
 
+            # Crear solicitud de operación
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -59,7 +66,7 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
 
-            # Enviar solicitud de orden
+            # Enviar la solicitud
             result = mt5.order_send(request)
             if result.retcode == mt5.TRADE_RETCODE_DONE:
                 print(f"Operación ejecutada correctamente: \n"
@@ -73,6 +80,8 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
             else:
                 print(f"Error ejecutando operación ({symbol}): {result.retcode}, {result.comment}")
                 return None
+
+        # Si hay posiciones abiertas, ajusta SL/TP dinámicos
         else:
             for pos in positions:
                 current_price = mt5.symbol_info_tick(symbol).ask if pos.type == 0 else mt5.symbol_info_tick(symbol).bid
@@ -84,7 +93,7 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
                 new_sl = round(max(new_sl, pos.sl), symbol_info.digits)
                 new_tp = round(min(new_tp, pos.tp), symbol_info.digits)
 
-                # Validar ajuste de SL/TP
+                # Ajustar SL/TP si es necesario
                 if new_sl != pos.sl or new_tp != pos.tp:
                     modify_request = {
                         "action": mt5.TRADE_ACTION_SLTP,
@@ -101,11 +110,16 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, t
                     else:
                         print(f"Error ajustando SL/TP: {modify_result.retcode}, {modify_result.comment}")
 
+                # Verificar si la posición sigue activa
                 updated_positions = mt5.positions_get(symbol=symbol)
                 if not updated_positions:
                     print(f"Posición cerrada ({symbol}). SL o TP alcanzado.")
+                    # Forzar apertura de una nueva operación inmediatamente
                     break
 
-        time.sleep(10)
+        # Pausa antes de la próxima iteración
+        time.sleep(1)  # Reducir la pausa para mayor sensibilidad
 
+    # Finalizar conexión
     mt5.shutdown()
+
