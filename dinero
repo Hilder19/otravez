@@ -5,11 +5,9 @@ def reconnect_to_mt5():
     """
     Intenta reconectar a MT5 en caso de desconexión.
     """
-    print("Intentando reconectar a MT5...")
     mt5.shutdown()
     time.sleep(5)
     if not mt5.initialize():
-        print("Error al reconectar a MT5.")
         return False
     return True
 
@@ -24,16 +22,14 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
         return
 
     while True:
-        # Verificar conexión
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
-            print("Conexión con el servidor MT5 perdida.")
             if not reconnect_to_mt5():
+                print("No se pudo reconectar a MT5.")
                 return
 
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
-            print(f"No hay posiciones abiertas para {symbol}.")
             break
 
         symbol_info = mt5.symbol_info(symbol)
@@ -41,6 +37,7 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             print(f"Error: No se pudo obtener información del símbolo {symbol}.")
             return
 
+        # Obtener la distancia mínima permitida
         stop_level = symbol_info.trade_stops_level * symbol_info.point
 
         for pos in positions:
@@ -52,35 +49,34 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
                 else current_price * (1 + sl_percentage / 100)
             )
 
-            # Ajustar la distancia del trailing stop si es menor al mínimo permitido
+            # Ajustar la distancia del trailing stop
             adjusted_trailing_distance = max(trailing_distance / 100 * current_price, stop_level)
-
             trailing_sl = (
                 max(pos.price_open, current_price) - adjusted_trailing_distance if pos.type == mt5.ORDER_TYPE_BUY
                 else min(pos.price_open, current_price) + adjusted_trailing_distance
             )
 
+            # Seleccionar el SL final
             final_sl = (
                 max(sl_static, trailing_sl) if pos.type == mt5.ORDER_TYPE_BUY
                 else min(sl_static, trailing_sl)
             )
 
-            # Calcular el nuevo Take Profit
-            new_tp = current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY else current_price * (1 - tp_percentage / 100)
+            # Calcular el nuevo TP
+            new_tp = (
+                current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
+                else current_price * (1 - tp_percentage / 100)
+            )
 
-            # Redondear SL y TP a la cantidad de dígitos permitidos por el símbolo
+            # Redondear SL y TP
             final_sl = round(final_sl, symbol_info.digits)
             new_tp = round(new_tp, symbol_info.digits)
 
-            print(f"Posición {pos.ticket}: SL={final_sl}, TP={new_tp}, Precio actual={current_price}")
-
             # Verificar restricciones del broker
             if abs(current_price - final_sl) < stop_level:
-                print(f"SL rechazado por estar demasiado cerca para posición {pos.ticket}. Distancia mínima: {stop_level}")
                 continue
 
             if abs(new_tp - current_price) < stop_level:
-                print(f"TP rechazado por estar demasiado cerca para posición {pos.ticket}. Distancia mínima: {stop_level}")
                 continue
 
             # Crear la solicitud de modificación
@@ -94,12 +90,9 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
 
             # Enviar la solicitud de modificación
             modify_result = mt5.order_send(modify_request)
-            if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
-                print(f"SL/TP modificados correctamente para posición: {pos.ticket}")
-            else:
+            if modify_result.retcode != mt5.TRADE_RETCODE_DONE:
                 print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
-                print(f"Detalles: {modify_result}")
 
-            time.sleep(5)
+            time.sleep(0.2)  # Reducir la saturación
 
     mt5.shutdown()
