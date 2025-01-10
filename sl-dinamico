@@ -1,0 +1,112 @@
+import MetaTrader5 as mt5
+import time
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=1.0, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5):
+    """
+    Ejecuta operaciones en MetaTrader 5 con un take profit y stop loss dinámicos.
+    Monitorea la operación abierta, ajusta TP y SL dinámicamente y maneja cierres por SL o TP.
+
+    Parameters:
+        latest_signal (str): Señal de compra ('buy') o venta ('sell').
+        symbol (str): Símbolo del mercado.
+        capital_assigned (float): Capital asignado para el símbolo.
+        risk_per_trade (float): Porcentaje del capital a arriesgar por operación (por defecto 1%).
+        tp_percentage (float): Porcentaje inicial para el take profit (por defecto 1.5%).
+        sl_percentage (float): Porcentaje inicial para el stop loss (por defecto 1%).
+        trailing_distance (float): Distancia en porcentaje para el trailing stop (por defecto 0.5%).
+    """
+    while True:
+        # Verificar si hay posiciones abiertas
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
+            print(f"No hay posiciones abiertas para {symbol}. Intentando abrir una nueva operación...")
+
+            # Validar señal de entrada
+            order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
+            if order_type is None:
+                print("Error: Señal inválida. No se puede determinar el tipo de orden.")
+                return None
+
+            # Verificar información del símbolo
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                print(f"Error: Información del símbolo {symbol} no encontrada.")
+                return None
+
+            # Obtener precio actual según el tipo de señal
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                print(f"Error: No se pudo obtener información del precio para {symbol}.")
+                return None
+            price = tick.ask if latest_signal == 'buy' else tick.bid
+
+            # Calcular tamaño del lote
+            contract_size = getattr(symbol_info, 'contract_size', 1)
+            lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
+            lot_size = round(lot_size / symbol_info.volume_step) * symbol_info.volume_step
+            lot_size = max(symbol_info.volume_min, min(lot_size, symbol_info.volume_max))
+
+            # Calcular niveles iniciales de SL y TP
+            sl_price = price * (1 - sl_percentage / 100) if latest_signal == 'buy' else price * (1 + sl_percentage / 100)
+            tp_price = price * (1 + tp_percentage / 100) if latest_signal == 'buy' else price * (1 - tp_percentage / 100)
+
+            # Crear solicitud de operación
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lot_size,
+                "type": order_type,
+                "price": price,
+                "sl": sl_price,
+                "tp": tp_price,
+                "deviation": 20,
+                "magic": 234000,
+                "comment": "Robot de trading",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            # Enviar la solicitud de orden
+            result = mt5.order_send(request)
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                print(f"Error al ejecutar operación ({symbol}): Código {result.retcode}, {result.comment}")
+                return None
+            print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
+        else:
+            # Monitorear posiciones abiertas
+            for pos in positions:
+                current_price = mt5.symbol_info_tick(symbol).ask if pos.type == 0 else mt5.symbol_info_tick(symbol).bid
+
+                # Lógica para compra (long)
+                if pos.type == 0:  
+                    new_sl = max(pos.sl, current_price * (1 - trailing_distance / 100))
+                    new_tp = max(pos.tp, current_price * (1 + tp_percentage / 100))
+
+                # Lógica para venta (short)
+                else:  
+                    new_sl = min(pos.sl, current_price * (1 + trailing_distance / 100))
+                    new_tp = min(pos.tp, current_price * (1 - tp_percentage / 100))
+
+                # Validar si SL o TP necesitan ajustes
+                if new_sl != pos.sl or new_tp != pos.tp:
+                    modify_request = {
+                        "action": mt5.TRADE_ACTION_SLTP,
+                        "symbol": symbol,
+                        "sl": new_sl,
+                        "tp": new_tp,
+                        "position": pos.ticket,
+                    }
+                    modify_result = mt5.order_send(modify_request)
+                    if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
+                        print(f"SL/TP ajustados dinámicamente. Nuevo SL: {new_sl}, Nuevo TP: {new_tp}")
+                    else:
+                        print(f"Error al ajustar SL/TP: {modify_result.retcode}, {modify_result.comment}")
+
+                # Verificar si la posición sigue activa
+                updated_positions = mt5.positions_get(symbol=symbol)
+                if not updated_positions:
+                    print(f"Posición para {symbol} cerrada. Probablemente alcanzó el SL o TP.")
+                    break
+
+        # Pausa para no sobrecargar el servidor
+        time.sleep(10)
