@@ -75,30 +75,52 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
     """Ejecuta operaciones rápidas para scalping."""
     order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
     if order_type is None:
+        print("No se ejecutó ninguna operación. Señal inválida.")
         return None
 
     symbol_info = mt5.symbol_info(symbol)
     if not symbol_info:
+        print(f"Error: Información no encontrada para el símbolo {symbol}.")
         return None
 
-    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
-    lot_size = (capital_assigned * (risk_per_trade / 100)) / (symbol_info.contract_size * price)
-    lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
+    # Verificar que `capital_assigned` sea un número
+    if not isinstance(capital_assigned, (int, float)):
+        print(f"Error: El capital asignado ({capital_assigned}) no es un número válido.")
+        return None
 
+    # Obtener el precio actual
+    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+    if not price or price <= 0:
+        print(f"Error: Precio inválido para el símbolo {symbol}.")
+        return None
+
+    # Calcular el tamaño del lote
+    try:
+        lot_size = (capital_assigned * (risk_per_trade / 100)) / (symbol_info.contract_size * price)
+        lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
+    except (ZeroDivisionError, AttributeError) as e:
+        print(f"Error al calcular el tamaño del lote: {e}")
+        return None
+
+    # Crear solicitud de orden
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": lot_size,
         "type": order_type,
         "price": price,
-        "deviation": 2,  # Muy bajo para evitar operaciones lejos del precio deseado
+        "deviation": 2,
         "magic": 234002,
         "comment": "Estrategia scalping",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
+    # Enviar orden
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"Error al ejecutar la operación: {result.retcode}")
         return None
+
+    print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
     return result.order
