@@ -68,7 +68,12 @@ def generate_signal(row):
     if buy_conditions >= 1:
         return 'buy'
     elif sell_conditions >= 1:
-        return 'sell'def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
+        return 'sell'
+    return 'hold'
+
+
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
     """Ejecuta operaciones rápidas para scalping."""
     order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
     if order_type is None:
@@ -131,5 +136,4 @@ def generate_signal(row):
     print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
     return result.order
 
-    return 'hold'
 
