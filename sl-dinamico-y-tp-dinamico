@@ -49,10 +49,10 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 
     return final_sl, new_tp
 
-def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5, verbose=False):
+def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_distance=0.5, profit_tolerance=0.01, verbose=False):
     """
     Modifica SL y TP dinámicamente o cierra posiciones abiertas para un símbolo.
-    Detecta ganancias y cierra la operación si el profit retrocede.
+    Detecta ganancias y cierra la operación si el profit retrocede más allá de un margen tolerado.
     """
     if not mt5.initialize():
         print("MetaTrader 5 no pudo inicializarse.")
@@ -135,8 +135,8 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
             else:
                 profit_max[pos.ticket] = max(profit_max[pos.ticket], pos.profit)  # Actualizar al máximo alcanzado
 
-            # Cerrar la operación si el profit retrocede
-            if pos.profit < profit_max[pos.ticket]:
+            # Cerrar la operación si el profit retrocede más allá del margen tolerado
+            if pos.profit < profit_max[pos.ticket] * (1 - profit_tolerance):
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL,
                     "symbol": symbol,
@@ -149,7 +149,7 @@ def close_open_positions(symbol, tp_percentage=1.5, sl_percentage=1.0, trailing_
                 close_result = mt5.order_send(close_request)
                 if close_result.retcode == mt5.TRADE_RETCODE_DONE:
                     if verbose:
-                        print(f"Operación {pos.ticket} cerrada por retroceso de ganancias.")
+                        print(f"Operación {pos.ticket} cerrada por retroceso de ganancias más allá del margen tolerado.")
                     profit_max.pop(pos.ticket, None)  # Eliminar el registro del profit máximo
                 else:
                     if verbose:
