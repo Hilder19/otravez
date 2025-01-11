@@ -1,0 +1,104 @@
+def calculate_indicators(df):
+    """Calcula indicadores optimizados para scalping."""
+    # MACD ultrarrápido para movimientos de segundos
+    df['ema_fast'] = df['close'].ewm(span=3, adjust=False).mean()
+    df['ema_slow'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['macd'] = df['ema_fast'] - df['ema_slow']
+    df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
+    df['macd_diff'] = df['macd'] - df['macd_signal']
+
+    # RSI hiperreactivo
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    avg_gain = gain.ewm(span=3, adjust=False).mean()
+    avg_loss = loss.ewm(span=3, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # ADX con periodos ultracortos
+    df['tr'] = df[['high', 'low', 'close']].apply(
+        lambda row: max(row['high'] - row['low'],
+                        abs(row['high'] - row['close']),
+                        abs(row['low'] - row['close'])), axis=1
+    )
+    df['atr'] = df['tr'].ewm(span=5, adjust=False).mean()
+    df['+dm'] = df['high'].diff().clip(lower=0)
+    df['-dm'] = -df['low'].diff().clip(lower=0)
+    df['+di'] = 100 * (df['+dm'] / df['atr']).ewm(span=5, adjust=False).mean()
+    df['-di'] = 100 * (df['-dm'] / df['atr']).ewm(span=5, adjust=False).mean()
+    df['adx'] = 100 * (abs(df['+di'] - df['-di']) / (df['+di'] + df['-di'])).ewm(span=5, adjust=False).mean()
+    df['adx_slope'] = df['adx'].diff()
+
+    # Bollinger Bands para scalping
+    df['sma'] = df['close'].rolling(window=7).mean()
+    df['std'] = df['close'].rolling(window=7).std()
+    df['upper_band'] = df['sma'] + (df['std'] * 1.5)
+    df['lower_band'] = df['sma'] - (df['std'] * 1.5)
+
+    df.fillna(0, inplace=True)
+    return df
+
+def generate_signal(row):
+    """Genera señales optimizadas para operaciones de scalping."""
+    buy_conditions = 0
+    sell_conditions = 0
+
+    # Condiciones de compra
+    if row['macd_diff'] > 0:
+        buy_conditions += 1
+    if row['rsi'] < 45:
+        buy_conditions += 1
+    if row['adx'] > 10:
+        buy_conditions += 1
+    if row['close'] < row['lower_band']:
+        buy_conditions += 1
+
+    # Condiciones de venta
+    if row['macd_diff'] < 0:
+        sell_conditions += 1
+    if row['rsi'] > 55:
+        sell_conditions += 1
+    if row['adx'] > 10:
+        sell_conditions += 1
+    if row['close'] > row['upper_band']:
+        sell_conditions += 1
+
+    # Generación de señales inmediatas
+    if buy_conditions >= 1:
+        return 'buy'
+    elif sell_conditions >= 1:
+        return 'sell'
+    return 'hold'
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
+    """Ejecuta operaciones rápidas para scalping."""
+    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
+    if order_type is None:
+        return None
+
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        return None
+
+    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+    lot_size = (capital_assigned * (risk_per_trade / 100)) / (symbol_info.contract_size * price)
+    lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": order_type,
+        "price": price,
+        "deviation": 2,  # Muy bajo para evitar operaciones lejos del precio deseado
+        "magic": 234002,
+        "comment": "Estrategia scalping",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return None
+    return result.order
