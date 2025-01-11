@@ -29,27 +29,52 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 
 
 
+
+
+# Archivo: scalping_close_positions.py
+import MetaTrader5 as mt5
+
 def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, verbose=False):
     """
     Maneja operaciones de scalping cerrando posiciones basadas en niveles internos de TP y SL.
     """
+    # Inicializar MT5
     if not mt5.initialize():
-        print("MetaTrader 5 no pudo inicializarse.")
+        print("Error: MetaTrader 5 no pudo inicializarse.")
         return
 
+    # Comprobar si estamos conectados a la cuenta
+    account_info = mt5.account_info()
+    if not account_info or account_info.login == 0:
+        print("Error: No se pudo conectar a la cuenta de MetaTrader 5.")
+        mt5.shutdown()
+        return
+    if verbose:
+        print(f"Conexión exitosa a MT5. Balance: {account_info.balance}, Equity: {account_info.equity}")
+
+    # Obtener las posiciones abiertas para el símbolo dado
     positions = mt5.positions_get(symbol=symbol)
-    if not positions:
+    if positions is None:
+        print("Error al obtener posiciones abiertas. Verifica la conexión con MT5.")
+        mt5.shutdown()
+        return
+    if len(positions) == 0:
         if verbose:
             print(f"No hay posiciones abiertas para {symbol}.")
+        mt5.shutdown()
         return
 
+    # Obtener información del símbolo
     symbol_info = mt5.symbol_info(symbol)
     if not symbol_info:
         print(f"Error: No se pudo obtener información del símbolo {symbol}.")
+        mt5.shutdown()
         return
 
-    # Obtener la distancia mínima permitida por el broker
+    # Validar stop_level mínimo permitido por el broker
     stop_level = symbol_info.trade_stops_level * symbol_info.point
+    if verbose:
+        print(f"Niveles mínimos permitidos por el broker para {symbol}: {stop_level}")
 
     for pos in positions:
         tick_info = mt5.symbol_info_tick(symbol)
@@ -74,7 +99,7 @@ def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, ver
         # Comprobar si se alcanzó el TP o SL interno
         if (pos.type == mt5.ORDER_TYPE_BUY and (current_price >= target_tp or current_price <= target_sl)) or \
            (pos.type == mt5.ORDER_TYPE_SELL and (current_price <= target_tp or current_price >= target_sl)):
-            # Cerrar la posición
+            # Crear solicitud para cerrar la posición
             close_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -92,8 +117,9 @@ def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, ver
                 print(f"Posición cerrada correctamente: Ticket {pos.ticket}")
             else:
                 print(f"Error al cerrar la posición {pos.ticket}: {result.retcode}")
+        else:
+            if verbose:
+                print(f"Precio actual: {current_price}, TP Interno: {target_tp}, SL Interno: {target_sl}")
 
-        if verbose:
-            print(f"Precio actual: {current_price}, TP Interno: {target_tp}, SL Interno: {target_sl}")
-
+    # Cerrar conexión con MT5
     mt5.shutdown()
