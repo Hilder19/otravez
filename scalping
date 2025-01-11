@@ -85,6 +85,15 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
         print(f"Error: Información no encontrada para el símbolo {symbol}.")
         return None
 
+    # Validar si 'capital_assigned' es un diccionario
+    if isinstance(capital_assigned, dict):
+        # Extraer el capital asignado para el símbolo actual
+        if symbol in capital_assigned:
+            capital_assigned = capital_assigned[symbol]
+        else:
+            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
+            return None
+
     # Validar que el atributo 'contract_size' exista
     contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor por defecto si no existe
     if contract_size <= 0:
