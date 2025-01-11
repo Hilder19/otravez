@@ -1,0 +1,113 @@
+def reconnect_to_mt5():
+    """
+    Intenta reconectar a MT5 en caso de desconexión.
+    """
+    mt5.shutdown()
+    time.sleep(2)  # Espera corta para reconexión rápida
+    if not mt5.initialize():
+        print("Error al reconectar a MT5.")
+        return False
+    return True
+
+def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info):
+    """
+    Ajusta SL y TP para cumplir con las restricciones de distancia mínima del broker.
+    """
+    digits = symbol_info.digits
+
+    # Ajustar SL según restricciones del broker
+    if abs(current_price - final_sl) < stop_level:
+        final_sl = (current_price - stop_level if final_sl < current_price else current_price + stop_level)
+        final_sl = round(final_sl, digits)
+
+    # Ajustar TP según restricciones del broker
+    if abs(new_tp - current_price) < stop_level:
+        new_tp = (current_price + stop_level if new_tp > current_price else current_price - stop_level)
+        new_tp = round(new_tp, digits)
+
+    return final_sl, new_tp
+
+def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=False):
+    """
+    Maneja posiciones abiertas con SL y TP ajustados para scalping.
+    """
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    while True:
+        # Verificar conexión
+        terminal_info = mt5.terminal_info()
+        if not terminal_info or not terminal_info.connected:
+            if not reconnect_to_mt5():
+                print("No se pudo reconectar a MT5.")
+                return
+
+        positions = mt5.positions_get(symbol=symbol)
+        if not positions:
+            if verbose:
+                print(f"No hay posiciones abiertas para {symbol}.")
+            break
+
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            print(f"Error: No se pudo obtener información del símbolo {symbol}.")
+            return
+
+        stop_level = symbol_info.trade_stops_level * symbol_info.point
+        successful_updates = 0
+        failed_updates = 0
+
+        for pos in positions:
+            tick_info = mt5.symbol_info_tick(symbol)
+            if not tick_info or tick_info.ask <= 0 or tick_info.bid <= 0:
+                if verbose:
+                    print(f"Error: Información de precios inválida para {symbol}.")
+                continue
+
+            current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
+
+            # SL basado en sl_percentage
+            sl_static = (
+                current_price * (1 - sl_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
+                else current_price * (1 + sl_percentage / 100)
+            )
+
+            # TP dinámico para scalping
+            new_tp = (
+                current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
+                else current_price * (1 - tp_percentage / 100)
+            )
+
+            # Redondear SL y TP
+            final_sl = round(sl_static, symbol_info.digits)
+            new_tp = round(new_tp, symbol_info.digits)
+
+            # Ajustar SL y TP a límites del broker
+            final_sl, new_tp = adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info)
+
+            # Crear solicitud de modificación
+            modify_request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": symbol,
+                "position": pos.ticket,
+                "sl": final_sl,
+                "tp": new_tp,
+            }
+
+            # Enviar la solicitud
+            modify_result = mt5.order_send(modify_request)
+            if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
+                successful_updates += 1
+            else:
+                failed_updates += 1
+                if verbose:
+                    print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
+
+            time.sleep(2)  # Espera mínima para operaciones rápidas
+
+        # Resumen de actualizaciones
+        if verbose:
+            print(f"{successful_updates} SL/TP modificados correctamente, {failed_updates} fallidos para {symbol}.")
+
+    mt5.shutdown()
