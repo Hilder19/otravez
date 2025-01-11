@@ -27,9 +27,9 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 
     return final_sl, new_tp
 
-def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=False):
+def close_open_positions(symbol, tp_percentage=0.1, sl_percentage=0.1, verbose=False):
     """
-    Maneja posiciones abiertas con SL y TP ajustados para scalping.
+    Maneja posiciones abiertas con SL y TP ajustados para scalping, respetando los límites mínimos del broker.
     """
     if not mt5.initialize():
         print("MetaTrader 5 no pudo inicializarse.")
@@ -54,6 +54,7 @@ def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=F
             print(f"Error: No se pudo obtener información del símbolo {symbol}.")
             return
 
+        # Obtener la distancia mínima permitida por el broker
         stop_level = symbol_info.trade_stops_level * symbol_info.point
         successful_updates = 0
         failed_updates = 0
@@ -67,24 +68,29 @@ def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=F
 
             current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
 
-            # SL basado en sl_percentage
+            # SL basado en sl_percentage, ajustado al stop_level si es necesario
             sl_static = (
                 current_price * (1 - sl_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
                 else current_price * (1 + sl_percentage / 100)
             )
+            sl_static = (
+                max(sl_static, current_price - stop_level) if pos.type == mt5.ORDER_TYPE_BUY
+                else min(sl_static, current_price + stop_level)
+            )
 
-            # TP dinámico para scalping
+            # TP dinámico basado en tp_percentage, ajustado al stop_level si es necesario
             new_tp = (
                 current_price * (1 + tp_percentage / 100) if pos.type == mt5.ORDER_TYPE_BUY
                 else current_price * (1 - tp_percentage / 100)
             )
+            new_tp = (
+                max(new_tp, current_price + stop_level) if pos.type == mt5.ORDER_TYPE_BUY
+                else min(new_tp, current_price - stop_level)
+            )
 
-            # Redondear SL y TP
+            # Redondear SL y TP a la cantidad de dígitos permitidos por el símbolo
             final_sl = round(sl_static, symbol_info.digits)
             new_tp = round(new_tp, symbol_info.digits)
-
-            # Ajustar SL y TP a límites del broker
-            final_sl, new_tp = adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info)
 
             # Crear solicitud de modificación
             modify_request = {
@@ -95,7 +101,7 @@ def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=F
                 "tp": new_tp,
             }
 
-            # Enviar la solicitud
+            # Enviar la solicitud de modificación
             modify_result = mt5.order_send(modify_request)
             if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
                 successful_updates += 1
@@ -104,7 +110,7 @@ def close_open_positions(symbol, tp_percentage=0.3, sl_percentage=0.2, verbose=F
                 if verbose:
                     print(f"Error modificando SL/TP para posición {pos.ticket}: {modify_result.retcode}")
 
-            time.sleep(2)  # Espera mínima para operaciones rápidas
+            time.sleep(1)  # Reducir la espera para operaciones rápidas
 
         # Resumen de actualizaciones
         if verbose:
