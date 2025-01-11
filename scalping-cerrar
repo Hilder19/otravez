@@ -34,6 +34,10 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 # Archivo: scalping_close_positions.py
 import MetaTrader5 as mt5
 
+# Archivo: scalping_close_positions.py
+import MetaTrader5 as mt5
+import time
+
 def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, verbose=False):
     """
     Maneja operaciones de scalping cerrando posiciones basadas en niveles internos de TP y SL.
@@ -43,7 +47,7 @@ def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, ver
         print("Error: MetaTrader 5 no pudo inicializarse.")
         return
 
-    # Comprobar si estamos conectados a la cuenta
+    # Comprobar conexión a la cuenta
     account_info = mt5.account_info()
     if not account_info or account_info.login == 0:
         print("Error: No se pudo conectar a la cuenta de MetaTrader 5.")
@@ -52,12 +56,20 @@ def scalping_close_positions(symbol, tp_percentage=0.05, sl_percentage=0.05, ver
     if verbose:
         print(f"Conexión exitosa a MT5. Balance: {account_info.balance}, Equity: {account_info.equity}")
 
-    # Obtener las posiciones abiertas para el símbolo dado
+    # Intentar obtener posiciones abiertas para el símbolo dado
     positions = mt5.positions_get(symbol=symbol)
     if positions is None:
-        print("Error al obtener posiciones abiertas. Verifica la conexión con MT5.")
+        print("Error al obtener posiciones abiertas. Intentando reconectar...")
         mt5.shutdown()
-        return
+        time.sleep(2)  # Esperar antes de intentar reconectar
+        if not mt5.initialize():
+            print("Error: No se pudo reconectar a MetaTrader 5.")
+            return
+        positions = mt5.positions_get(symbol=symbol)
+        if positions is None:
+            print("Error persistente al obtener posiciones. Finalizando ejecución.")
+            mt5.shutdown()
+            return
     if len(positions) == 0:
         if verbose:
             print(f"No hay posiciones abiertas para {symbol}.")
