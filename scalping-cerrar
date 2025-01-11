@@ -46,107 +46,64 @@ import time
 import MetaTrader5 as mt5
 import time
 
+
+
+
+import MetaTrader5 as mt5
+import time
+
 def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
     """
-    Cierra posiciones abiertas aplicando SL y TP con valores fijos internamente y los establece en el servidor.
+    Cierra posiciones abiertas si alcanzan el Take Profit (TP) o Stop Loss (SL).
     
     Parámetros:
-        symbol (str): Símbolo para el cual se aplicarán los cambios.
+        symbol (str): Símbolo del mercado.
         tp_fixed (float): Take Profit fijo (en valor absoluto).
         sl_fixed (float): Stop Loss fijo (en valor absoluto).
         verbose (bool): Si es True, imprime información detallada.
     """
-    # Inicializar conexión con MT5
+    # Inicializar conexión con MetaTrader 5
     if not mt5.initialize():
-        print("Error: No se pudo inicializar MetaTrader 5. Verifica que el terminal esté abierto y configurado.")
+        print("MetaTrader 5 no pudo inicializarse.")
         return
 
-    # Verificar información de la terminal y la cuenta
-    terminal_info = mt5.terminal_info()
-    account_info = mt5.account_info()
-    if terminal_info is None or account_info is None:
-        print("Error: No se pudo conectar al terminal o recuperar información de la cuenta.")
-        print(f"Detalles: {mt5.last_error()}")
-        mt5.shutdown()
-        return
-
-    if verbose:
-        print(f"Conexión exitosa a MT5. Servidor: {terminal_info.server}, Balance: {account_info.balance}")
-
-    # Obtener posiciones abiertas para el símbolo especificado
+    # Obtener posiciones abiertas para el símbolo
     positions = mt5.positions_get(symbol=symbol)
     if positions is None:
         print(f"Error al obtener posiciones abiertas para {symbol}: {mt5.last_error()}")
-        mt5.shutdown()
         return
     if len(positions) == 0:
         if verbose:
             print(f"No hay posiciones abiertas para {symbol}.")
-        mt5.shutdown()
         return
 
-    successful_updates = 0
-    failed_updates = 0
-    processed_positions = 0  # Para manejar muchas posiciones abiertas
+    successful_closes = 0
+    failed_closes = 0
 
     for pos in positions:
-        # Verificar si la conexión sigue activa
-        if not mt5.account_info():
-            print("Error: Conexión perdida con MetaTrader 5 durante la operación.")
-            break
-
         # Obtener el precio actual
         tick_info = mt5.symbol_info_tick(symbol)
-        if not tick_info or tick_info.ask <= 0 or tick_info.bid <= 0:
+        if not tick_info:
             if verbose:
-                print(f"Error: Información de precios inválida para {symbol}.")
+                print(f"Error: No se pudo obtener información de precios para {symbol}.")
             continue
 
+        # Determinar el precio actual según el tipo de operación
         current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
 
-        # Calcular SL y TP fijos
-        final_sl = (
-            current_price - sl_fixed if pos.type == mt5.ORDER_TYPE_BUY
-            else current_price + sl_fixed
-        )
-        final_tp = (
-            current_price + tp_fixed if pos.type == mt5.ORDER_TYPE_BUY
-            else current_price - tp_fixed
-        )
-
-        # Actualizar niveles de SL y TP en el servidor
-        update_request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "position": pos.ticket,
-            "symbol": symbol,
-            "sl": round(final_sl, 5),
-            "tp": round(final_tp, 5),
-        }
-
-        update_result = mt5.order_send(update_request)
-        if update_result.retcode == mt5.TRADE_RETCODE_DONE:
-            successful_updates += 1
-            if verbose:
-                print(f"SL/TP actualizados para posición {pos.ticket}: SL={final_sl:.5f}, TP={final_tp:.5f}")
-        else:
-            failed_updates += 1
-            if verbose:
-                print(f"Error al actualizar SL/TP para posición {pos.ticket}: {update_result.retcode} "
-                      f"(Error detalle: {mt5.last_error()})")
-
-        # Comprobar internamente si se alcanzaron SL o TP
-        if (pos.type == mt5.ORDER_TYPE_BUY and (current_price <= final_sl or current_price >= final_tp)) or \
-           (pos.type == mt5.ORDER_TYPE_SELL and (current_price >= final_sl or current_price <= final_tp)):
+        # Verificar si se alcanzó el SL o TP
+        if (pos.type == mt5.ORDER_TYPE_BUY and (current_price <= pos.sl or current_price >= pos.tp)) or \
+           (pos.type == mt5.ORDER_TYPE_SELL and (current_price >= pos.sl or current_price <= pos.tp)):
             # Crear solicitud para cerrar la posición
             close_request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": pos.volume,
                 "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
-                "price": current_price,  # Usar precio correcto para BUY o SELL
-                "deviation": 10,  # Incrementar desviación para mayor flexibilidad
+                "price": current_price,
+                "deviation": 2,
                 "magic": pos.magic,
-                "comment": "Cierre por SL/TP interno",
+                "comment": "Cierre por SL/TP alcanzado",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
@@ -154,20 +111,19 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
             # Enviar solicitud para cerrar la posición
             close_result = mt5.order_send(close_request)
             if close_result.retcode == mt5.TRADE_RETCODE_DONE:
-                successful_updates += 1
+                successful_closes += 1
                 if verbose:
                     print(f"Posición {pos.ticket} cerrada correctamente.")
             else:
-                failed_updates += 1
+                failed_closes += 1
                 if verbose:
-                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode} "
-                          f"(Error detalle: {mt5.last_error()})")
+                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode}")
 
         # Espera para evitar saturar la API
-        processed_positions += 1
-        time.sleep(2 if processed_positions > 10 else 1)  # Incrementa la espera si hay muchas posiciones
+        time.sleep(1)
 
     # Resumen de resultados
-    print(f"SL/TP actualizados: {successful_updates}, Fallidos: {failed_updates}")
-    mt5.shutdown()
+    print(f"Posiciones cerradas exitosamente: {successful_closes}, Fallidas: {failed_closes}")
 
+    # Finalizar conexión con MetaTrader 5
+    mt5.shutdown()
