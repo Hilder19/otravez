@@ -76,4 +76,115 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
         time.sleep(1)
 
     # Resumen de resultados
+    print(f"Posiciones cerradas exitosamente: {successful_closes}, Fallidas: {failed_closes}") 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TP Y SL 2
+
+
+
+
+import MetaTrader5 as mt5
+import time
+
+def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
+    """
+    Cierra posiciones abiertas si alcanzan el Take Profit (TP) o Stop Loss (SL).
+    
+    Parámetros:
+        symbol (str): Símbolo del mercado.
+        tp_fixed (float): Distancia fija de Take Profit en términos absolutos.
+        sl_fixed (float): Distancia fija de Stop Loss en términos absolutos.
+        verbose (bool): Si es True, imprime información detallada.
+    """
+    # Inicializar conexión con MetaTrader 5
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    # Obtener posiciones abiertas para el símbolo
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        print(f"Error al obtener posiciones abiertas para {symbol}: {mt5.last_error()}")
+        return
+    if len(positions) == 0:
+        if verbose:
+            print(f"No hay posiciones abiertas para {symbol}.")
+        return
+
+    successful_closes = 0
+    failed_closes = 0
+
+    for pos in positions:
+        # Obtener el precio actual
+        tick_info = mt5.symbol_info_tick(symbol)
+        if not tick_info:
+            if verbose:
+                print(f"Error: No se pudo obtener información de precios para {symbol}.")
+            continue
+
+        # Calcular los niveles de SL y TP en función del precio de apertura
+        if pos.type == mt5.ORDER_TYPE_BUY:
+            sl_price = pos.price_open - sl_fixed
+            tp_price = pos.price_open + tp_fixed
+        else:  # SELL
+            sl_price = pos.price_open + sl_fixed
+            tp_price = pos.price_open - tp_fixed
+
+        # Determinar el precio actual según el tipo de operación
+        current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
+
+        # Verificar si el precio alcanzó el SL o TP calculado
+        if (pos.type == mt5.ORDER_TYPE_BUY and (current_price <= sl_price or current_price >= tp_price)) or \
+           (pos.type == mt5.ORDER_TYPE_SELL and (current_price >= sl_price or current_price <= tp_price)):
+            # Crear solicitud para cerrar la posición
+            close_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": pos.volume,
+                "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                "price": current_price,
+                "deviation": 2,
+                "magic": pos.magic,
+                "comment": "Cierre por SL/TP alcanzado",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            # Enviar solicitud para cerrar la posición
+            close_result = mt5.order_send(close_request)
+            if close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                successful_closes += 1
+                if verbose:
+                    print(f"Posición {pos.ticket} cerrada correctamente.")
+            else:
+                failed_closes += 1
+                if verbose:
+                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode}")
+
+        # Espera para evitar saturar la API
+        time.sleep(1)
+
+    # Resumen de resultados
     print(f"Posiciones cerradas exitosamente: {successful_closes}, Fallidas: {failed_closes}")
+
+    # Finalizar conexión con MetaTrader 5
+    mt5.shutdown()
+
