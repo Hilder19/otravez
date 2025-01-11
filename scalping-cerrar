@@ -124,6 +124,3 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
 
     # Resumen de resultados
     print(f"Posiciones cerradas exitosamente: {successful_closes}, Fallidas: {failed_closes}")
-
-    # Finalizar conexión con MetaTrader 5
-    mt5.shutdown()
