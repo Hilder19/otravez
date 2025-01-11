@@ -1,0 +1,11 @@
+def show_trade_profit(ticket):
+    """Muestra las ganancias o pérdidas de la operación recién ejecutada."""
+    posiciones = mt5.positions_get()
+    if posiciones is None:
+        logging.error(f"Error al obtener posiciones: {mt5.last_error()}")
+        return
+
+    resultados = [(pos.symbol, pos.profit) for pos in posiciones]
+
+    for symbol, profit in resultados:
+        logging.info(f"{symbol}: Ganancia/Pérdida: {profit:.2f}")
