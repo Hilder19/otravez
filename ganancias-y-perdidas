@@ -54,3 +54,63 @@ def show_trade_profit(ticket):
 
     # Finalizar conexión con MetaTrader 5
     mt5.shutdown()
+
+
+
+
+
+
+
+
+
+
+
+GANANCIA Y PERDIDA 3
+
+
+
+import MetaTrader5 as mt5
+import logging
+from datetime import datetime, timedelta
+from colorama import Fore, Style
+
+def show_trade_profit(ticket):
+    """
+    Muestra el resultado de la operación cerrada con un ticket específico.
+    Indica si fue ganancia (chulito verde) o pérdida (x roja).
+    """
+    # Inicializar conexión con MetaTrader 5
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    # Establecer rango de fechas amplio para el historial
+    from_date = datetime.now() - timedelta(days=30)  # Últimos 30 días
+    to_date = datetime.now()
+
+    # Obtener historial de operaciones cerradas en el rango de fechas
+    deals = mt5.history_deals_get(from_date, to_date)
+    if deals is None:
+        logging.error(f"No se pudo obtener el historial de operaciones: {mt5.last_error()}")
+        mt5.shutdown()
+        return
+
+    # Filtrar la operación por ticket
+    deal = next((d for d in deals if d.ticket == ticket), None)
+    if deal is None:
+        logging.error(f"No se encontró información para el ticket: {ticket}")
+        mt5.shutdown()
+        return
+
+    # Mostrar el resultado de la operación
+    profit = deal.profit
+    if profit > 0:
+        print(f"{Fore.GREEN}Ganancia ✔: {profit:.2f}{Style.RESET_ALL}")
+    elif profit < 0:
+        print(f"{Fore.RED}Pérdida ✘: {profit:.2f}{Style.RESET_ALL}")
+    else:
+        print(f"Sin ganancias ni pérdidas: {profit:.2f}")
+
+    # Finalizar conexión con MetaTrader 5
+    mt5.shutdown()
+
