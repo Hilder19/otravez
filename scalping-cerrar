@@ -38,9 +38,14 @@ import MetaTrader5 as mt5
 import MetaTrader5 as mt5
 import time
 
+
+
+import MetaTrader5 as mt5
+import time
+
 def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
     """
-    Cierra posiciones abiertas aplicando SL y TP con valores fijos internamente.
+    Cierra posiciones abiertas aplicando SL y TP con valores fijos internamente y los establece en el servidor.
     
     Parámetros:
         symbol (str): Símbolo para el cual se aplicarán los cambios.
@@ -63,9 +68,9 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
             print(f"No hay posiciones abiertas para {symbol}.")
         return
 
-    # Procesar cada posición abierta
     successful_updates = 0
     failed_updates = 0
+    processed_positions = 0  # Para manejar muchas posiciones abiertas
 
     for pos in positions:
         # Obtener el precio actual
@@ -77,7 +82,7 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
 
         current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
 
-        # Calcular SL y TP fijos (internos)
+        # Calcular SL y TP fijos
         final_sl = (
             current_price - sl_fixed if pos.type == mt5.ORDER_TYPE_BUY
             else current_price + sl_fixed
@@ -87,8 +92,25 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
             else current_price - tp_fixed
         )
 
-        if verbose:
-            print(f"Posición {pos.ticket}: Precio actual={current_price:.5f}, SL={final_sl:.5f}, TP={final_tp:.5f}")
+        # Actualizar niveles de SL y TP en el servidor
+        update_request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": pos.ticket,
+            "symbol": symbol,
+            "sl": round(final_sl, 5),
+            "tp": round(final_tp, 5),
+        }
+
+        update_result = mt5.order_send(update_request)
+        if update_result.retcode == mt5.TRADE_RETCODE_DONE:
+            successful_updates += 1
+            if verbose:
+                print(f"SL/TP actualizados para posición {pos.ticket}: SL={final_sl:.5f}, TP={final_tp:.5f}")
+        else:
+            failed_updates += 1
+            if verbose:
+                print(f"Error al actualizar SL/TP para posición {pos.ticket}: {update_result.retcode} "
+                      f"(Error detalle: {mt5.last_error()})")
 
         # Comprobar internamente si se alcanzaron SL o TP
         if (pos.type == mt5.ORDER_TYPE_BUY and (current_price <= final_sl or current_price >= final_tp)) or \
@@ -99,8 +121,8 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
                 "symbol": symbol,
                 "volume": pos.volume,
                 "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
-                "price": current_price,
-                "deviation": 2,
+                "price": current_price,  # Usar precio correcto para BUY o SELL
+                "deviation": 10,  # Incrementar desviación para mayor flexibilidad
                 "magic": pos.magic,
                 "comment": "Cierre por SL/TP interno",
                 "type_time": mt5.ORDER_TIME_GTC,
@@ -116,10 +138,14 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
             else:
                 failed_updates += 1
                 if verbose:
-                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode}")
+                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode} "
+                          f"(Error detalle: {mt5.last_error()})")
 
         # Espera para evitar saturar la API
-        time.sleep(1)
+        processed_positions += 1
+        time.sleep(2 if processed_positions > 10 else 1)  # Incrementa la espera si hay muchas posiciones
 
     # Resumen de resultados
-    print(f"Posiciones cerradas exitosamente: {successful_updates}, Fallidas: {failed_updates}")
+    print(f"SL/TP actualizados: {successful_updates}, Fallidos: {failed_updates}")
+    mt5.shutdown()
+
