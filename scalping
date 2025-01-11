@@ -68,10 +68,7 @@ def generate_signal(row):
     if buy_conditions >= 1:
         return 'buy'
     elif sell_conditions >= 1:
-        return 'sell'
-    return 'hold'
-
-def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
+        return 'sell'def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
     """Ejecuta operaciones rápidas para scalping."""
     order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
     if order_type is None:
@@ -83,7 +80,16 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
         print(f"Error: Información no encontrada para el símbolo {symbol}.")
         return None
 
-    # Verificar que `capital_assigned` sea un número
+    # Verificar si `capital_assigned` es un diccionario
+    if isinstance(capital_assigned, dict):
+        # Extraer el valor numérico del símbolo actual
+        if symbol in capital_assigned:
+            capital_assigned = capital_assigned[symbol]
+        else:
+            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
+            return None
+
+    # Verificar que `capital_assigned` sea un número válido
     if not isinstance(capital_assigned, (int, float)):
         print(f"Error: El capital asignado ({capital_assigned}) no es un número válido.")
         return None
@@ -124,3 +130,6 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
 
     print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
     return result.order
+
+    return 'hold'
+
