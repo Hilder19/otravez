@@ -8,4 +8,49 @@ def show_trade_profit(ticket):
     resultados = [(pos.symbol, pos.profit) for pos in posiciones]
 
     for symbol, profit in resultados:
-        logging.info(f"{symbol}: Ganancia/Pérdida: {profit:.2f}")
+        logging.info(f"{symbol}: Ganancia/Pérdida: {profit:.2f}") 
+
+
+
+
+
+
+
+GANACIAS Y PERDIDA 2
+
+
+import MetaTrader5 as mt5
+import logging
+from colorama import Fore, Style
+
+def show_trade_profit(ticket):
+    """
+    Muestra el resultado de la operación cerrada con un ticket específico.
+    Indica si fue ganancia (chulito verde) o pérdida (x roja).
+    """
+    # Inicializar conexión con MetaTrader 5
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    # Obtener historial de operaciones cerradas
+    deal = mt5.history_deals_get(ticket=ticket)
+    if deal is None or len(deal) == 0:
+        logging.error(f"No se encontró información para el ticket: {ticket}")
+        mt5.shutdown()
+        return
+
+    # Procesar el resultado de la operación
+    for d in deal:
+        profit = d.profit
+        if profit > 0:
+            # Ganancia con chulito verde
+            print(f"{Fore.GREEN}Ganancia ✔: {profit:.2f}{Style.RESET_ALL}")
+        elif profit < 0:
+            # Pérdida con x roja
+            print(f"{Fore.RED}Pérdida ✘: {profit:.2f}{Style.RESET_ALL}")
+        else:
+            print(f"Sin ganancias ni pérdidas: {profit:.2f}")
+
+    # Finalizar conexión con MetaTrader 5
+    mt5.shutdown()
