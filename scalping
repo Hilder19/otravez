@@ -85,18 +85,10 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
         print(f"Error: Información no encontrada para el símbolo {symbol}.")
         return None
 
-    # Verificar si `capital_assigned` es un diccionario
-    if isinstance(capital_assigned, dict):
-        # Extraer el valor numérico del símbolo actual
-        if symbol in capital_assigned:
-            capital_assigned = capital_assigned[symbol]
-        else:
-            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
-            return None
-
-    # Verificar que `capital_assigned` sea un número válido
-    if not isinstance(capital_assigned, (int, float)):
-        print(f"Error: El capital asignado ({capital_assigned}) no es un número válido.")
+    # Validar que el atributo 'contract_size' exista
+    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor por defecto si no existe
+    if contract_size <= 0:
+        print(f"Error: Tamaño del contrato inválido para {symbol}.")
         return None
 
     # Obtener el precio actual
@@ -107,7 +99,7 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
 
     # Calcular el tamaño del lote
     try:
-        lot_size = (capital_assigned * (risk_per_trade / 100)) / (symbol_info.contract_size * price)
+        lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
         lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
     except (ZeroDivisionError, AttributeError) as e:
         print(f"Error al calcular el tamaño del lote: {e}")
@@ -135,5 +127,3 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
 
     print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
     return result.order
-
-
