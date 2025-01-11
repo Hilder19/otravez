@@ -43,6 +43,9 @@ import time
 import MetaTrader5 as mt5
 import time
 
+import MetaTrader5 as mt5
+import time
+
 def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
     """
     Cierra posiciones abiertas aplicando SL y TP con valores fijos internamente y los establece en el servidor.
@@ -53,19 +56,33 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
         sl_fixed (float): Stop Loss fijo (en valor absoluto).
         verbose (bool): Si es True, imprime información detallada.
     """
-    # Verificar si MT5 ya está inicializado
+    # Inicializar conexión con MT5
     if not mt5.initialize():
-        print("MetaTrader 5 no pudo inicializarse.")
+        print("Error: No se pudo inicializar MetaTrader 5. Verifica que el terminal esté abierto y configurado.")
         return
+
+    # Verificar información de la terminal y la cuenta
+    terminal_info = mt5.terminal_info()
+    account_info = mt5.account_info()
+    if terminal_info is None or account_info is None:
+        print("Error: No se pudo conectar al terminal o recuperar información de la cuenta.")
+        print(f"Detalles: {mt5.last_error()}")
+        mt5.shutdown()
+        return
+
+    if verbose:
+        print(f"Conexión exitosa a MT5. Servidor: {terminal_info.server}, Balance: {account_info.balance}")
 
     # Obtener posiciones abiertas para el símbolo especificado
     positions = mt5.positions_get(symbol=symbol)
     if positions is None:
         print(f"Error al obtener posiciones abiertas para {symbol}: {mt5.last_error()}")
+        mt5.shutdown()
         return
     if len(positions) == 0:
         if verbose:
             print(f"No hay posiciones abiertas para {symbol}.")
+        mt5.shutdown()
         return
 
     successful_updates = 0
@@ -73,6 +90,11 @@ def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
     processed_positions = 0  # Para manejar muchas posiciones abiertas
 
     for pos in positions:
+        # Verificar si la conexión sigue activa
+        if not mt5.account_info():
+            print("Error: Conexión perdida con MetaTrader 5 durante la operación.")
+            break
+
         # Obtener el precio actual
         tick_info = mt5.symbol_info_tick(symbol)
         if not tick_info or tick_info.ask <= 0 or tick_info.bid <= 0:
