@@ -1,56 +1,9 @@
-def reconnect_to_mt5():
-    """
-    Intenta reconectar a MT5 en caso de desconexión.
-    """
-    mt5.shutdown()
-    time.sleep(2)  # Espera corta para reconexión rápida
-    if not mt5.initialize():
-        print("Error al reconectar a MT5.")
-        return False
-    return True
-
-def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info):
-    """
-    Ajusta SL y TP para cumplir con las restricciones de distancia mínima del broker.
-    """
-    digits = symbol_info.digits
-
-    # Ajustar SL según restricciones del broker
-    if abs(current_price - final_sl) < stop_level:
-        final_sl = (current_price - stop_level if final_sl < current_price else current_price + stop_level)
-        final_sl = round(final_sl, digits)
-
-    # Ajustar TP según restricciones del broker
-    if abs(new_tp - current_price) < stop_level:
-        new_tp = (current_price + stop_level if new_tp > current_price else current_price - stop_level)
-        new_tp = round(new_tp, digits)
-
-    return final_sl, new_tp
 
 
 
 
 
-# Archivo: scalping_close_positions.py
-import MetaTrader5 as mt5
 
-# Archivo: scalping_close_positions.py
-import MetaTrader5 as mt5
-import time
-
-
-
-import MetaTrader5 as mt5
-import time
-
-import MetaTrader5 as mt5
-import time
-
-
-
-
-import MetaTrader5 as mt5
-import time
 
 def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
     """
