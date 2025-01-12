@@ -259,6 +259,10 @@ def show_closed_trades_live(interval=1):
 
 
 
+
+
+
+
 GANANCIA Y PERDIDA 6
 
 
@@ -267,12 +271,13 @@ import logging
 from datetime import datetime, timedelta
 from colorama import Fore, Style
 
-def show_trade_profit(ticket):
+def show_trade_profit(ticket, pares_por_hilera=3):
     """
-    Muestra las ganancias o pérdidas de la operación recién ejecutada.
+    Muestra las ganancias o pérdidas de la operación recién ejecutada en formato de columnas.
 
     Args:
         ticket (int): El identificador del ticket de la operación que se cerró.
+        pares_por_hilera (int): Número de columnas por hilera.
     """
     # Establecer el rango de tiempo (último minuto)
     now = datetime.now()
@@ -284,24 +289,40 @@ def show_trade_profit(ticket):
         logging.error(f"Error al obtener operaciones históricas: {mt5.last_error()}")
         return
 
-    # Buscar el deal correspondiente al ticket proporcionado
+    # Filtrar la operación por ticket
     deal = next((d for d in deals if d.ticket == ticket), None)
-    if deal:
-        # Extraer la información necesaria
-        symbol = deal.symbol
-        profit = deal.profit
-
-        # Mostrar el resultado según sea ganancia o pérdida
-        if profit > 0:
-            print(f"{symbol}: {Fore.GREEN}GANANCIA = {profit:.2f} ✅{Style.RESET_ALL}")
-        elif profit < 0:
-            print(f"{symbol}: {Fore.RED}PERDIDA = {profit:.2f} ❌{Style.RESET_ALL}")
-        else:
-            print(f"{symbol}: SIN CAMBIOS = {profit:.2f}")
-    else:
+    if not deal:
         logging.warning(f"No se encontró información para el ticket {ticket}.")
+        return
 
+    # Extraer datos de la operación
+    symbol = deal.symbol
+    profit = deal.profit
+    estado = f"{Fore.GREEN}✓{Style.RESET_ALL}" if profit > 0 else f"{Fore.RED}✗{Style.RESET_ALL}" if profit < 0 else "-"
 
+    # Preparar los datos para mostrar en columnas
+    pares = [symbol]
+    resultados = [profit]
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    logging.info("\n--- Resultados en Columnas ---")
+
+    columnas = []
+    for i in range(0, len(pares), pares_por_hilera):
+        columna = []
+        for j in range(i, min(i + pares_por_hilera, len(pares))):
+            numero = f"{j + 1:>2}."
+            par = pares[j]
+            ganancia = resultados[j]
+            simbolo = f"{Fore.GREEN}✓{Style.RESET_ALL}" if ganancia > 0 else f"{Fore.RED}✗{Style.RESET_ALL}" if ganancia < 0 else "-"
+            columna.append(f"{numero} {par}: {ganancia:7.2f} {simbolo}")
+        columnas.append(columna)
+
+    # Combinar y mostrar las columnas como una tabla
+    filas_max = max(len(col) for col in columnas)
+    for fila in range(filas_max):
+        linea = "   ".join(col[fila] if fila < len(col) else "" for col in columnas)
+        logging.info(f"{timestamp} | {linea}")
 
 
 
