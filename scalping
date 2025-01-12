@@ -73,12 +73,23 @@ def generate_signal(row):
 
 
 
-def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
-    """Ejecuta operaciones rápidas para scalping."""
-    # Verificar si hay más de 5 operaciones abiertas
+
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5, max_open_trades=5):
+    """Ejecuta operaciones rápidas para scalping, con un límite configurable de operaciones abiertas."""
+
+    # Solicitar al usuario el número máximo de operaciones abiertas si no se proporciona
+    if max_open_trades is None:
+        try:
+            max_open_trades = int(input("Ingrese el número máximo de operaciones abiertas permitidas: "))
+        except ValueError:
+            print("Valor inválido. El límite predeterminado será 5.")
+            max_open_trades = 5
+
+    # Verificar si hay más operaciones abiertas que el límite
     open_positions = mt5.positions_total()
-    if open_positions >= 5:
-        print("Límite de 5 operaciones abiertas alcanzado. No se puede ejecutar una nueva operación.")
+    if open_positions >= max_open_trades:
+        print(f"Límite de {max_open_trades} operaciones abiertas alcanzado. No se puede ejecutar una nueva operación.")
         return None
 
     order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
@@ -142,4 +153,3 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
 
     print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
     return result.order
-
