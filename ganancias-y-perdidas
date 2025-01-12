@@ -181,3 +181,79 @@ def show_closed_trades_live(interval=1):
 
 
 
+
+
+
+
+
+
+GANANCIA Y PERDIDA 5 
+
+
+
+import MetaTrader5 as mt5
+import logging
+from colorama import Fore, Style
+import time
+from datetime import datetime, timedelta
+
+def show_closed_trades_live(interval=1):
+    """
+    Monitorea continuamente las posiciones y muestra las ganancias o pérdidas
+    de las operaciones que se cierran en el momento.
+
+    Args:
+        interval (int): Tiempo en segundos entre cada verificación de posiciones.
+    """
+    if not mt5.initialize():
+        logging.error("No se pudo inicializar MetaTrader 5.")
+        return
+
+    previous_positions = {pos.ticket for pos in mt5.positions_get() or []}
+
+    try:
+        while True:
+            # Obtener las posiciones actuales
+            current_positions = {pos.ticket for pos in mt5.positions_get() or []}
+
+            # Identificar las posiciones que se cerraron
+            closed_positions = previous_positions - current_positions
+
+            if closed_positions:
+                # Definir el rango de tiempo para consultar operaciones históricas
+                now = datetime.now()
+                start = now - timedelta(days=1)  # Consultar solo el último día
+                deals = mt5.history_deals_get(start, now)
+
+                if deals is None:
+                    logging.error("No se pudieron obtener las operaciones históricas.")
+                else:
+                    for ticket in closed_positions:
+                        # Buscar el deal correspondiente al ticket cerrado
+                        deal = next((d for d in deals if d.ticket == ticket), None)
+                        if deal:
+                            symbol = deal.symbol
+                            profit = deal.profit
+
+                            # Mostrar solo el mensaje requerido
+                            if profit > 0:
+                                print(f"{symbol}: {Fore.GREEN}GANANCIA = {profit:.2f} ✅{Style.RESET_ALL}")
+                            elif profit < 0:
+                                print(f"{symbol}: {Fore.RED}PERDIDA = {profit:.2f} ❌{Style.RESET_ALL}")
+                            else:
+                                print(f"{symbol}: SIN CAMBIOS = {profit:.2f}")
+
+            # Actualizar las posiciones previas
+            previous_positions = current_positions
+
+            # Esperar el intervalo antes de la siguiente verificación
+            time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print("Monitoreo detenido por el usuario.")
+    finally:
+        mt5.shutdown()
+
+
+
+
