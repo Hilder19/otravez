@@ -257,3 +257,56 @@ def show_closed_trades_live(interval=1):
 
 
 
+
+
+GANANCIA Y PERDIDA 6
+
+
+import MetaTrader5 as mt5
+import logging
+from datetime import datetime, timedelta
+from colorama import Fore, Style
+
+def show_trade_profit(ticket):
+    """
+    Muestra las ganancias o pérdidas de la operación recién ejecutada.
+
+    Args:
+        ticket (int): El identificador del ticket de la operación que se cerró.
+    """
+    # Establecer el rango de tiempo (último minuto)
+    now = datetime.now()
+    start = now - timedelta(minutes=1)
+
+    # Obtener las operaciones históricas en el rango de tiempo
+    deals = mt5.history_deals_get(start, now)
+    if deals is None:
+        logging.error(f"Error al obtener operaciones históricas: {mt5.last_error()}")
+        return
+
+    # Buscar el deal correspondiente al ticket proporcionado
+    deal = next((d for d in deals if d.ticket == ticket), None)
+    if deal:
+        # Extraer la información necesaria
+        symbol = deal.symbol
+        profit = deal.profit
+
+        # Mostrar el resultado según sea ganancia o pérdida
+        if profit > 0:
+            print(f"{symbol}: {Fore.GREEN}GANANCIA = {profit:.2f} ✅{Style.RESET_ALL}")
+        elif profit < 0:
+            print(f"{symbol}: {Fore.RED}PERDIDA = {profit:.2f} ❌{Style.RESET_ALL}")
+        else:
+            print(f"{symbol}: SIN CAMBIOS = {profit:.2f}")
+    else:
+        logging.warning(f"No se encontró información para el ticket {ticket}.")
+
+
+
+
+
+
+
+
+
+
