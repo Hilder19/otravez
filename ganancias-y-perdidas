@@ -114,3 +114,70 @@ def show_trade_profit(ticket):
     # Finalizar conexión con MetaTrader 5
     mt5.shutdown()
 
+
+
+
+
+
+
+
+
+
+
+GANANCIA Y PERDIDA 4 
+
+
+import MetaTrader5 as mt5
+import logging
+from colorama import Fore, Style
+import time
+
+def show_closed_trades_live(interval=1):
+    """
+    Monitorea continuamente las posiciones y muestra las ganancias o pérdidas
+    de las operaciones que se cierran en el momento.
+
+    Args:
+        interval (int): Tiempo en segundos entre cada verificación de posiciones.
+    """
+    if not mt5.initialize():
+        logging.error("No se pudo inicializar MetaTrader 5.")
+        return
+
+    previous_positions = {pos.ticket for pos in mt5.positions_get() or []}
+
+    try:
+        while True:
+            # Obtener las posiciones actuales
+            current_positions = {pos.ticket for pos in mt5.positions_get() or []}
+
+            # Identificar las posiciones que se cerraron
+            closed_positions = previous_positions - current_positions
+
+            if closed_positions:
+                for ticket in closed_positions:
+                    deal = next((pos for pos in mt5.history_deals_get() if pos.ticket == ticket), None)
+                    if deal:
+                        symbol = deal.symbol
+                        profit = deal.profit
+
+                        if profit > 0:
+                            print(f"{symbol}: {Fore.GREEN}GANANCIA = {profit:.2f} ✅{Style.RESET_ALL}")
+                        elif profit < 0:
+                            print(f"{symbol}: {Fore.RED}PERDIDA = {profit:.2f} ❌{Style.RESET_ALL}")
+                        else:
+                            print(f"{symbol}: SIN CAMBIOS = {profit:.2f}")
+
+            # Actualizar las posiciones previas
+            previous_positions = current_positions
+
+            # Esperar el intervalo antes de la siguiente verificación
+            time.sleep(interval)
+
+    except KeyboardInterrupt:
+        print("Monitoreo detenido por el usuario.")
+    finally:
+        mt5.shutdown()
+
+
+
