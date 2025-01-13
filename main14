@@ -1,0 +1,499 @@
+import logging
+import time
+import MetaTrader5 as mt5
+import pandas as pd
+import numpy as np
+from credenciales import *
+from exness import *
+from porcentaje_capital import *
+from tipo_de_operacion import *
+from ganacias_perdidas import *
+import getpass
+import signal
+from datetime import datetime, timedelta
+from colorama import Fore, Style
+
+
+
+
+
+
+
+
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+def cerrar_conexion(sig, frame):
+    """Manejador de la señal Ctrl + C para cerrar la conexión correctamente."""
+    logging.info("\nCerrando conexión con MT5...")
+    mt5.shutdown()  # Cerrar MT5 de manera segura
+    logging.info("Conexión cerrada.")
+    exit(0)  # Salir del programa
+
+
+# Registrar el manejador de la señal Ctrl + C
+signal.signal(signal.SIGINT, cerrar_conexion)
+
+
+def connect_to_mt5():
+    """Solicita credenciales al usuario y establece conexión con MetaTrader 5."""
+    try:
+        cuenta = int(input("Introduce tu número de cuenta: "))
+        servidor = input("Introduce el nombre del servidor: ")
+        contraseña = getpass.getpass("Introduce tu contraseña: ")  # Ocultar la contraseña
+    except ValueError:
+        logging.error("El número de cuenta debe ser un número entero.")
+        return False
+
+    # Inicializar MT5
+    if not mt5.initialize():
+        logging.error("Error al inicializar MT5: %s", mt5.last_error())
+        return False
+
+    # Iniciar sesión
+    if not mt5.login(cuenta, password=contraseña, server=servidor):
+        logging.error("Error al iniciar sesión: %s", mt5.last_error())
+        mt5.shutdown()
+        return False
+
+    logging.info("Conexión exitosa a MT5.")
+    return True
+
+
+def get_account_equity():
+    """Obtiene el capital de la cuenta."""
+    account_info = mt5.account_info()
+    if account_info is None:
+        logging.error("No se pudo obtener la información de la cuenta.")
+        return None
+    return account_info.equity
+
+
+def calculate_risk_and_capital_distribution(symbols):
+    """
+    Calcula el riesgo y distribuye el capital según el porcentaje definido por el usuario.
+    """
+    total_equity = get_account_equity()
+    if total_equity is None:
+        logging.error("No se pudo obtener el equity de la cuenta.")
+        return None
+
+    try:
+        # Solicitar al usuario el porcentaje del capital para asignar
+        risk_percentage = float(input("Introduce el porcentaje del capital para asignar a los símbolos (0-100): "))
+        if not 0 <= risk_percentage <= 100:
+            logging.error("El porcentaje debe estar entre 0 y 100.")
+            return None
+    except ValueError:
+        logging.error("Por favor, introduce un número válido.")
+        return None
+
+    # Calcular el capital por cada símbolo
+    number_of_symbols = len(symbols)
+    if number_of_symbols == 0:
+        logging.error("La lista de símbolos está vacía.")
+        return None
+
+    capital_per_symbol = (total_equity * risk_percentage / 100) / number_of_symbols
+    logging.info(f"El capital asignado a cada símbolo será: {capital_per_symbol:.2f}")
+
+    # Crear un diccionario con el capital para cada símbolo
+    capital_distribution = {symbol: capital_per_symbol for symbol in symbols}
+    return capital_distribution
+
+
+def fetch_market_data(symbol, timeframe, limit=1):
+    """Obtiene datos de mercado desde MT5."""
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
+    if rates is None:
+        logging.error(f"Error al obtener datos para {symbol}: {mt5.last_error()}")
+        return None
+
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    return df
+
+
+def calculate_indicators(df):
+    """Calcula indicadores optimizados para scalping."""
+    # MACD ultrarrápido para movimientos de segundos
+    df['ema_fast'] = df['close'].ewm(span=3, adjust=False).mean()
+    df['ema_slow'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['macd'] = df['ema_fast'] - df['ema_slow']
+    df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
+    df['macd_diff'] = df['macd'] - df['macd_signal']
+
+    # RSI hiperreactivo
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    avg_gain = gain.ewm(span=3, adjust=False).mean()
+    avg_loss = loss.ewm(span=3, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # ADX con periodos ultracortos
+    df['tr'] = df[['high', 'low', 'close']].apply(
+        lambda row: max(row['high'] - row['low'],
+                        abs(row['high'] - row['close']),
+                        abs(row['low'] - row['close'])), axis=1
+    )
+    df['atr'] = df['tr'].ewm(span=5, adjust=False).mean()
+    df['+dm'] = df['high'].diff().clip(lower=0)
+    df['-dm'] = -df['low'].diff().clip(lower=0)
+    df['+di'] = 100 * (df['+dm'] / df['atr']).ewm(span=5, adjust=False).mean()
+    df['-di'] = 100 * (df['-dm'] / df['atr']).ewm(span=5, adjust=False).mean()
+    df['adx'] = 100 * (abs(df['+di'] - df['-di']) / (df['+di'] + df['-di'])).ewm(span=5, adjust=False).mean()
+    df['adx_slope'] = df['adx'].diff()
+
+    # Bollinger Bands para scalping
+    df['sma'] = df['close'].rolling(window=7).mean()
+    df['std'] = df['close'].rolling(window=7).std()
+    df['upper_band'] = df['sma'] + (df['std'] * 1.5)
+    df['lower_band'] = df['sma'] - (df['std'] * 1.5)
+
+    df.fillna(0, inplace=True)
+    return df
+
+def generate_signal(row):
+    """Genera señales optimizadas para operaciones de scalping."""
+    buy_conditions = 0
+    sell_conditions = 0
+
+    # Condiciones de compra
+    if row['macd_diff'] > 0:
+        buy_conditions += 1
+    if row['rsi'] < 45:
+        buy_conditions += 1
+    if row['adx'] > 10:
+        buy_conditions += 1
+    if row['close'] < row['lower_band']:
+        buy_conditions += 1
+
+    # Condiciones de venta
+    if row['macd_diff'] < 0:
+        sell_conditions += 1
+    if row['rsi'] > 55:
+        sell_conditions += 1
+    if row['adx'] > 10:
+        sell_conditions += 1
+    if row['close'] > row['upper_band']:
+        sell_conditions += 1
+
+    # Generación de señales inmediatas
+    if buy_conditions >= 1:
+        return 'buy'
+    elif sell_conditions >= 1:
+        return 'sell'
+    return 'hold'
+
+
+import time
+
+import time
+
+def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
+    """Ejecuta operaciones rápidas para scalping, asegurando que solo haya una operación abierta por símbolo."""
+    while True:
+        # Verificar si hay operaciones abiertas para el símbolo
+        open_positions = mt5.positions_get(symbol=symbol)
+        if open_positions and len(open_positions) > 0:
+            print(f"Ya existe una operación abierta para el símbolo {symbol}. Esperando a que se cierre...")
+            time.sleep(5)  # Esperar 5 segundos antes de verificar nuevamente
+        else:
+            print(f"No hay operaciones abiertas para el símbolo {symbol}. Procediendo con la operación...")
+            break  # Salir del bucle si no hay operaciones abiertas
+
+    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
+    if order_type is None:
+        print("No se ejecutó ninguna operación. Señal inválida.")
+        return None
+
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: Información no encontrada para el símbolo {symbol}.")
+        return None
+
+    # Validar si 'capital_assigned' es un diccionario
+    if isinstance(capital_assigned, dict):
+        # Extraer el capital asignado para el símbolo actual
+        if symbol in capital_assigned:
+            capital_assigned = capital_assigned[symbol]
+        else:
+            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
+            return None
+
+    # Validar que el atributo 'contract_size' exista
+    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor por defecto si no existe
+    if contract_size <= 0:
+        print(f"Error: Tamaño del contrato inválido para {symbol}.")
+        return None
+
+    # Obtener el precio actual
+    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+    if not price or price <= 0:
+        print(f"Error: Precio inválido para el símbolo {symbol}.")
+        return None
+
+    # Calcular el tamaño del lote
+    try:
+        lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
+        lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
+    except (ZeroDivisionError, AttributeError) as e:
+        print(f"Error al calcular el tamaño del lote: {e}")
+        return None
+
+    # Crear solicitud de orden
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": lot_size,
+        "type": order_type,
+        "price": price,
+        "deviation": 2,
+        "magic": 234002,
+        "comment": "Estrategia scalping",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+
+    # Enviar orden
+    result = mt5.order_send(request)
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"Error al ejecutar la operación: {result.retcode}")
+        return None
+
+    print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
+    
+    # Monitorear hasta que la operación se cierre
+    while True:
+        open_positions = mt5.positions_get(symbol=symbol)
+        if not open_positions:
+            print(f"Operación cerrada para el símbolo {symbol}.")
+            break
+        time.sleep(5)  # Esperar antes de volver a verificar
+
+    return result.order
+
+
+
+
+
+
+
+
+
+import MetaTrader5 as mt5
+import time
+
+def reconnect_to_mt5():
+    """
+    Intenta reconectar a MT5 en caso de desconexión.
+    """
+    mt5.shutdown()
+    time.sleep(2)  # Espera corta para reconexión rápida
+    if not mt5.initialize():
+        print("Error al reconectar a MT5.")
+        return False
+    return True
+
+def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, symbol_info):
+    """
+    Ajusta SL y TP para cumplir con las restricciones de distancia mínima del broker.
+    """
+    digits = symbol_info.digits
+
+    # Ajustar SL según restricciones del broker
+    if abs(current_price - final_sl) < stop_level:
+        final_sl = (current_price - stop_level if final_sl < current_price else current_price + stop_level)
+        final_sl = round(final_sl, digits)
+
+    # Ajustar TP según restricciones del broker
+    if abs(new_tp - current_price) < stop_level:
+        new_tp = (current_price + stop_level if new_tp > current_price else current_price - stop_level)
+        new_tp = round(new_tp, digits)
+
+    return final_sl, new_tp
+
+
+
+
+
+
+
+def close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False):
+    """
+    Cierra posiciones abiertas si alcanzan el Take Profit (TP) o Stop Loss (SL) dinámico.
+
+    Parámetros:
+        symbol (str): Símbolo del mercado.
+        tp_fixed (float): Take Profit fijo (en valor absoluto).
+        sl_fixed (float): Stop Loss fijo (en valor absoluto).
+        verbose (bool): Si es True, imprime información detallada.
+    """
+    # Inicializar conexión con MetaTrader 5
+    if not mt5.initialize():
+        print("MetaTrader 5 no pudo inicializarse.")
+        return
+
+    # Obtener posiciones abiertas para el símbolo
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        print(f"Error al obtener posiciones abiertas para {symbol}: {mt5.last_error()}")
+        return
+    if len(positions) == 0:
+        if verbose:
+            print(f"No hay posiciones abiertas para {symbol}.")
+        return
+
+    successful_closes = 0
+    failed_closes = 0
+
+    for pos in positions:
+        # Obtener el precio actual
+        tick_info = mt5.symbol_info_tick(symbol)
+        if not tick_info:
+            if verbose:
+                print(f"Error: No se pudo obtener información de precios para {symbol}.")
+            continue
+
+        # Determinar el precio actual según el tipo de operación
+        current_price = tick_info.ask if pos.type == mt5.ORDER_TYPE_BUY else tick_info.bid
+
+        # Calcular niveles de TP y SL dinámicos
+        tp_level = pos.price_open + tp_fixed if pos.type == mt5.ORDER_TYPE_BUY else pos.price_open - tp_fixed
+        initial_sl_level = pos.price_open  # SL inicial en el nivel de entrada
+
+        # Ajustar SL dinámico para asegurar que no haya pérdidas
+        if pos.type == mt5.ORDER_TYPE_BUY:
+            sl_level = max(initial_sl_level, current_price - sl_fixed)
+        else:
+            sl_level = min(initial_sl_level, current_price + sl_fixed)
+
+        # Verificar si se alcanzó el SL o TP
+        if (pos.type == mt5.ORDER_TYPE_BUY and (current_price <= sl_level or current_price >= tp_level)) or \
+           (pos.type == mt5.ORDER_TYPE_SELL and (current_price >= sl_level or current_price <= tp_level)):
+            # Crear solicitud para cerrar la posición
+            close_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": pos.volume,
+                "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+                "price": current_price,
+                "deviation": 2,
+                "magic": pos.magic,
+                "comment": "Cierre por SL/TP alcanzado",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            # Enviar solicitud para cerrar la posición
+            close_result = mt5.order_send(close_request)
+            if close_result.retcode == mt5.TRADE_RETCODE_DONE:
+                successful_closes += 1
+                if verbose:
+                    print(f"Posición {pos.ticket} cerrada correctamente. TP/SL alcanzado.")
+            else:
+                failed_closes += 1
+                if verbose:
+                    print(f"Error al cerrar posición {pos.ticket}: {close_result.retcode}")
+
+        # Espera para evitar saturar la API
+        time.sleep(1)
+
+    # Resumen de resultados
+    print(f"Posiciones cerradas exitosamente: {successful_closes}, Fallidas: {failed_closes}")
+
+    # Finalizar conexión con MetaTrader 5
+    
+
+
+
+
+def show_trade_profit(ticket):
+    """Muestra las ganancias o pérdidas de la operación recién ejecutada."""
+    posiciones = mt5.positions_get()
+    if posiciones is None:
+        logging.error(f"Error al obtener posiciones: {mt5.last_error()}")
+        return
+
+    resultados = [(pos.symbol, pos.profit) for pos in posiciones]
+
+    for symbol, profit in resultados:
+        logging.info(f"{symbol}: Ganancia/Pérdida: {profit:.2f}")
+
+
+def main():
+    """Función principal."""
+    if not connect_to_mt5():
+        return
+
+    # Obtener el equity de la cuenta
+    equity = get_account_equity()
+    if equity is None:
+        logging.error("No se puede continuar sin conocer el capital de la cuenta.")
+        mt5.shutdown()
+        return
+    logging.info(f"Equity actual de la cuenta: {equity}")
+
+    symbols = ["BTCUSDm"]
+    timeframe = mt5.TIMEFRAME_M1
+    capital_assigned = calculate_risk_and_capital_distribution(symbols)
+    if capital_assigned is None:
+        mt5.shutdown()
+        return
+
+    while True:
+        for symbol in symbols:
+            # Obtener datos de mercado
+            df = fetch_market_data(symbol, timeframe)
+            if df is None:
+                continue
+
+            # Calcular indicadores
+            df = calculate_indicators(df)
+            df['signal'] = df.apply(generate_signal, axis=1)
+
+            # Generar la última señal
+            latest_signal = df['signal'].iloc[-1]
+
+            # Ejecutar operación si hay una señal válida
+            if latest_signal in ['buy', 'sell']:
+                # Usar el capital asignado al símbolo actual
+                ticket = execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5)
+
+            # Cerrar las posiciones abiertas con base en SL/TP dinámico
+            close_open_positions(symbol, tp_fixed=0.05, sl_fixed=0.05, verbose=False)
+
+            # Mostrar ganancias/pérdidas de la operación
+            if ticket:
+                show_trade_profit(ticket)
+
+        # Actualizar el equity de la cuenta en cada iteración
+        equity = get_account_equity()
+        if equity is None:
+            logging.error("No se pudo actualizar el equity de la cuenta. Terminando ejecución.")
+            break           
+        logging.info(f"Equity actualizado: {equity}")
+
+        # Esperar antes de repetir el ciclo
+        time.sleep(60)
+
+    
+    # Cerrar conexión
+    mt5.shutdown()
+
+if __name__ == "__main__":
+    main()
