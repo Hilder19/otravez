@@ -335,36 +335,45 @@ def adjust_sl_tp_to_broker_limits(final_sl, new_tp, current_price, stop_level, s
 import MetaTrader5 as mt5
 import time
 
-def close_open_positions(symbol, tp_percentage=0.01, verbose=False):
+import MetaTrader5 as mt5
+import time
+
+def close_open_positions(symbol, tp_percentage=0.0001, verbose=False, max_iterations=100):
     """
-    Maneja posiciones abiertas ajustando solo el Take Profit (TP) con un valor fijo basado en un porcentaje del precio inicial.
+    Maneja posiciones abiertas ajustando el Take Profit (TP) con un valor fijo basado en un porcentaje del precio inicial.
 
     Args:
         symbol (str): Símbolo financiero (e.g., 'EURUSD').
         tp_percentage (float): Porcentaje para calcular el valor fijo del Take Profit.
         verbose (bool): Imprime información adicional si es True.
+        max_iterations (int): Número máximo de iteraciones antes de salir del bucle.
     """
     if not mt5.initialize():
-        print("MetaTrader 5 no pudo inicializarse.")
+        print("Error: MetaTrader 5 no pudo inicializarse.")
         return
 
-    while True:
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+
         # Verificar conexión
         terminal_info = mt5.terminal_info()
         if not terminal_info or not terminal_info.connected:
-            print("No se pudo conectar a MT5.")
-            return
+            print("Error: No se pudo conectar a MT5.")
+            break
 
+        # Obtener posiciones abiertas
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
             if verbose:
-                print(f"No hay posiciones abiertas para {symbol}.")
+                print(f"No hay posiciones abiertas para {symbol}. Salida del proceso.")
             break
 
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
             print(f"Error: No se pudo obtener información del símbolo {symbol}.")
-            return
+            break
 
         successful_updates = 0
         failed_updates = 0
@@ -391,18 +400,33 @@ def close_open_positions(symbol, tp_percentage=0.01, verbose=False):
             modify_result = mt5.order_send(modify_request)
             if modify_result.retcode == mt5.TRADE_RETCODE_DONE:
                 successful_updates += 1
+                if verbose:
+                    print(f"TP modificado correctamente para posición {pos.ticket}: {static_tp}")
             else:
                 failed_updates += 1
                 if verbose:
                     print(f"Error modificando TP para posición {pos.ticket}: {modify_result.retcode}")
 
-            time.sleep(2)  # Espera mínima para operaciones rápidas
+            time.sleep(2)  # Espera mínima para evitar conflictos con el servidor
 
         # Resumen de actualizaciones
         if verbose:
-            print(f"{successful_updates} TP modificados correctamente, {failed_updates} fallidos para {symbol}.")
+            print(f"Iteración {iteration}: {successful_updates} TP modificados correctamente, {failed_updates} fallidos para {symbol}.")
 
-   
+        # Salida del bucle si no hay más posiciones por actualizar
+        if successful_updates == 0 and failed_updates == 0:
+            if verbose:
+                print("No hay cambios pendientes. Saliendo del proceso.")
+            break
+
+    if verbose:
+        print(f"Proceso terminado tras {iteration} iteraciones.")
+
+    mt5.shutdown()
+
+# Ejemplo de uso
+# close_open_positions('EURUSD', tp_percentage=0.1, verbose=True, max_iterations=50)
+
 
 
 
