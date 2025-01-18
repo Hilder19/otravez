@@ -1,6 +1,5 @@
 import MetaTrader5 as mt5
 import pandas as pd
-import talib as ta
 import time
 
 # Conectar a MetaTrader 5
@@ -11,6 +10,9 @@ symbol = "EURUSD"
 timeframe = mt5.TIMEFRAME_M1  # Gráfico de 1 minuto (M1)
 num_bars = 200  # Últimos 200 datos de barras
 
+# Variable global para almacenar la tendencia anterior
+previous_trend = None
+
 # Función para obtener los datos históricos
 def get_data(symbol, timeframe, num_bars):
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
@@ -18,44 +20,60 @@ def get_data(symbol, timeframe, num_bars):
     data['time'] = pd.to_datetime(data['time'], unit='s')
     return data
 
+# Funciones para cálculos de indicadores
+def calculate_ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+def calculate_rsi(series, period):
+    delta = series.diff(1)
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(series, fast_period, slow_period, signal_period):
+    fast_ema = calculate_ema(series, fast_period)
+    slow_ema = calculate_ema(series, slow_period)
+    macd = fast_ema - slow_ema
+    signal = calculate_ema(macd, signal_period)
+    return macd, signal
+
+def calculate_bbands(series, period, std_dev):
+    sma = series.rolling(window=period).mean()
+    std = series.rolling(window=period).std()
+    upper_band = sma + (std_dev * std)
+    lower_band = sma - (std_dev * std)
+    return upper_band, sma, lower_band
+
 # Función para detectar microtendencias alcistas o bajistas
 def detect_microtrend(data):
-    # Calcular indicadores: EMA, RSI, MACD, Bandas de Bollinger
-    data['ema5'] = ta.EMA(data['close'], timeperiod=5)
-    data['ema13'] = ta.EMA(data['close'], timeperiod=13)
-    data['rsi'] = ta.RSI(data['close'], timeperiod=14)
-    macd, signal, _ = ta.MACD(data['close'], fastperiod=12, slowperiod=26, signalperiod=9)
-    data['macd'] = macd
-    data['signal'] = signal
-    upper_band, middle_band, lower_band = ta.BBANDS(data['close'], timeperiod=20)
+    # Calcular indicadores
+    data['ema5'] = calculate_ema(data['close'], 5)
+    data['ema13'] = calculate_ema(data['close'], 13)
+    data['rsi'] = calculate_rsi(data['close'], 14)
+    data['macd'], data['signal'] = calculate_macd(data['close'], 12, 26, 9)
+    data['upper_band'], _, data['lower_band'] = calculate_bbands(data['close'], 20, 2)
 
-    # Detectar microtendencias
     last_row = data.iloc[-1]
 
-    # Detectar microtendencia alcista (EMA cruce, RSI, MACD, Bandas de Bollinger)
-    if last_row['ema5'] > last_row['ema13'] and last_row['rsi'] > 50 and last_row['macd'] > last_row['signal'] and last_row['close'] > upper_band[-1]:
-        return 'Alcista'
-    
-    # Detectar microtendencia bajista (EMA cruce, RSI, MACD, Bandas de Bollinger)
-    if last_row['ema5'] < last_row['ema13'] and last_row['rsi'] < 50 and last_row['macd'] < last_row['signal'] and last_row['close'] < lower_band[-1]:
-        return 'Bajista'
-    
-    return 'Neutral'
+    # Detectar microtendencia alcista
+    if last_row['ema5'] > last_row['ema13'] and last_row['rsi'] > 50 and last_row['macd'] > last_row['signal'] and last_row['close'] > last_row['upper_band']:
+        return last_row, 'Alcista'
 
-# Bucle principal para monitorear el mercado en tiempo real
-while True:
-    data = get_data(symbol, timeframe, num_bars)
-    trend = detect_microtrend(data)
-    
-    print(f"Microtendencia actual en {symbol}: {trend}") 
+    # Detectar microtendencia bajista
+    if last_row['ema5'] < last_row['ema13'] and last_row['rsi'] < 50 and last_row['macd'] < last_row['signal'] and last_row['close'] < last_row['lower_band']:
+        return last_row, 'Bajista'
 
+    return last_row, 'Neutral'
 
-
-def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
-    """Ejecuta operaciones rápidas para scalping."""
-    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
-    if order_type is None:
-        print("No se ejecutó ninguna operación. Señal inválida.")
+# Función para ejecutar operaciones simultáneamente (sin cambios)
+def execute_trade(last_row, symbol, capital_assigned, risk_per_trade=0.5):
+    if last_row['ema5'] > last_row['ema13']:
+        order_type = mt5.ORDER_BUY
+    elif last_row['ema5'] < last_row['ema13']:
+        order_type = mt5.ORDER_SELL
+    else:
+        print("No se ejecutó ninguna operación. Las EMAs no indican una tendencia clara.")
         return None
 
     symbol_info = mt5.symbol_info(symbol)
@@ -63,28 +81,12 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
         print(f"Error: Información no encontrada para el símbolo {symbol}.")
         return None
 
-    # Validar si 'capital_assigned' es un diccionario
-    if isinstance(capital_assigned, dict):
-        # Extraer el capital asignado para el símbolo actual
-        if symbol in capital_assigned:
-            capital_assigned = capital_assigned[symbol]
-        else:
-            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
-            return None
-
-    # Validar que el atributo 'contract_size' exista
-    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor por defecto si no existe
-    if contract_size <= 0:
-        print(f"Error: Tamaño del contrato inválido para {symbol}.")
-        return None
-
-    # Obtener el precio actual
-    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
+    price = last_row['close']
     if not price or price <= 0:
         print(f"Error: Precio inválido para el símbolo {symbol}.")
         return None
 
-    # Calcular el tamaño del lote
+    contract_size = getattr(symbol_info, 'contract_size', 1)
     try:
         lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
         lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
@@ -92,30 +94,49 @@ def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5):
         print(f"Error al calcular el tamaño del lote: {e}")
         return None
 
-    # Crear solicitud de orden
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot_size,
-        "type": order_type,
-        "price": price,
-        "deviation": 2,
-        "magic": 234002,
-        "comment": "Estrategia scalping",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
+    tp_percentage = 0.001 / 100
+    tp_price = price * (1 + tp_percentage) if order_type == mt5.ORDER_BUY else price * (1 - tp_percentage)
 
-    # Enviar orden
-    result = mt5.order_send(request)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Error al ejecutar la operación: {result.retcode}")
-        return None
+    requests = []
+    for i in range(5):
+        requests.append({
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": order_type,
+            "price": price,
+            "tp": tp_price,
+            "deviation": 2,
+            "magic": 234002,
+            "comment": f"Scalping {i + 1}/5",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        })
 
-    print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
-    return result.order
+    results = []
+    for request in requests:
+        result = mt5.order_send(request)
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"Operación ejecutada correctamente. Ticket: {result.order}")
+            results.append(result.order)
+        else:
+            print(f"Error al ejecutar la operación: {result.retcode}")
 
-    
-    # Esperar 1 minuto antes de obtener nuevos datos
+    return results if results else None
+
+# Bucle principal para monitorear el mercado en tiempo real
+while True:
+    global previous_trend
+    data = get_data(symbol, timeframe, num_bars)
+    last_row, trend = detect_microtrend(data)
+
+    print(f"Microtendencia actual en {symbol}: {trend}")
+    if trend in ['Alcista', 'Bajista']:
+        if trend != previous_trend:
+            execute_trade(last_row, symbol, capital_assigned=1000)
+            previous_trend = trend
+        else:
+            print("La tendencia actual ya ha sido procesada.")
+    else:
+        print("No se detectó una señal clara. Esperando nueva oportunidad...")
     time.sleep(60)
-
