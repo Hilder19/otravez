@@ -1,0 +1,432 @@
+import logging
+import time
+import MetaTrader5 as mt5
+import pandas as pd
+import numpy as np
+from credenciales import *
+from exness import *
+from porcentaje_capital import *
+from tipo_de_operacion import *
+from ganacias_perdidas import *
+import getpass
+import signal
+from datetime import datetime, timedelta
+
+
+
+
+
+
+
+# Configuración de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+
+def cerrar_conexion(sig, frame):
+    """Manejador de la señal Ctrl + C para cerrar la conexión correctamente."""
+    logging.info("\nCerrando conexión con MT5...")
+    mt5.shutdown()  # Cerrar MT5 de manera segura
+    logging.info("Conexión cerrada.")
+    exit(0)  # Salir del programa
+
+
+# Registrar el manejador de la señal Ctrl + C
+signal.signal(signal.SIGINT, cerrar_conexion)
+
+
+def connect_to_mt5():
+    """Solicita credenciales al usuario y establece conexión con MetaTrader 5."""
+    try:
+        cuenta = int(input("Introduce tu número de cuenta: "))
+        servidor = input("Introduce el nombre del servidor: ")
+        contraseña = getpass.getpass("Introduce tu contraseña: ")  # Ocultar la contraseña
+    except ValueError:
+        logging.error("El número de cuenta debe ser un número entero.")
+        return False
+
+    # Inicializar MT5
+    if not mt5.initialize():
+        logging.error("Error al inicializar MT5: %s", mt5.last_error())
+        return False
+
+    # Iniciar sesión
+    if not mt5.login(cuenta, password=contraseña, server=servidor):
+        logging.error("Error al iniciar sesión: %s", mt5.last_error())
+        mt5.shutdown()
+        return False
+
+    logging.info("Conexión exitosa a MT5.")
+    return True
+
+
+
+
+
+
+logging.basicConfig(level=logging.ERROR)
+
+def get_account_equity():
+    """
+    Obtiene el balance y el margen libre de la cuenta.
+    """
+    # Obtiene la información de la cuenta
+    account_info = mt5.account_info()
+    if account_info is None:
+        print("No se pudo obtener la información de la cuenta.")
+        return None
+
+    # Extrae el balance y el margen libre
+    balance = account_info.balance
+    free_margin = account_info.margin_free
+
+    # Imprime los valores obtenidos en una sola línea
+    print(f"Balance: {balance}, Margen libre: {free_margin}")
+
+    # Retorna solo los valores como un diccionario sin mostrarlo
+    return balance, free_margin
+
+
+
+
+
+
+
+def calculate_risk_and_capital_distribution(symbols, free_margin):
+    """
+    Calcula el riesgo y distribuye el capital basado en el margen libre y el porcentaje definido por el usuario.
+    
+    Args:
+        symbols (list): Lista de símbolos financieros.
+        free_margin (float): Margen libre de la cuenta.
+    
+    Returns:
+        dict: Un diccionario con la distribución de capital para cada símbolo.
+    """
+    if free_margin is None or free_margin <= 0:
+        logging.error("El margen libre no es válido o es insuficiente.")
+        return None
+
+    try:
+        # Solicitar al usuario el porcentaje del margen libre para asignar
+        risk_percentage = float(input("Introduce el porcentaje del margen libre para asignar a los símbolos (0-100): "))
+        if not 0 <= risk_percentage <= 100:
+            logging.error("El porcentaje debe estar entre 0 y 100.")
+            return None
+    except ValueError:
+        logging.error("Por favor, introduce un número válido.")
+        return None
+
+    # Calcular el capital por cada símbolo
+    number_of_symbols = len(symbols)
+    if number_of_symbols == 0:
+        logging.error("La lista de símbolos está vacía.")
+        return None
+
+    capital_per_symbol = (free_margin * risk_percentage / 100) / number_of_symbols
+    logging.info(f"El capital asignado a cada símbolo será: {capital_per_symbol:.2f}")
+
+    # Crear un diccionario con el capital para cada símbolo
+    capital_distribution = {symbol: capital_per_symbol for symbol in symbols}
+    return capital_distribution
+
+
+
+
+
+
+
+
+
+
+
+
+
+mt5.initialize()
+
+# Configurar el símbolo (par de divisas), el intervalo y la cantidad de datos históricos
+symbol = "BTCUSDm"
+timeframe = mt5.TIMEFRAME_M1  # Gráfico de 1 minuto (M1)
+num_bars = 200  # Últimos 200 datos de barras
+
+# Variable global para almacenar la tendencia anterior
+previous_trend = None
+
+import MetaTrader5 as mt5
+import pandas as pd
+
+# Función para obtener los datos históricos
+def get_data(symbol, timeframe, num_bars):
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    if rates is None or len(rates) == 0:
+        raise ValueError(f"No se pudieron obtener datos históricos para el símbolo {symbol}.")
+    
+    data = pd.DataFrame(rates)
+    data['time'] = pd.to_datetime(data['time'], unit='s')
+    return data
+
+
+
+
+def calculate_ema(series, period):
+    """Calcula la Media Móvil Exponencial (EMA) con mayor suavidad."""
+    return series.ewm(span=period, adjust=False).mean()
+
+def calculate_rsi(series, period):
+    """Calcula el Índice de Fuerza Relativa (RSI) suavizado."""
+    delta = series.diff()
+    gain = delta.clip(lower=0).ewm(span=period, adjust=False).mean()
+    loss = -delta.clip(upper=0).ewm(span=period, adjust=False).mean()
+    rs = gain / (loss + 1e-10)  # Evitar divisiones por cero
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(series, fast_period, slow_period, signal_period):
+    """Calcula el MACD con suavidad adicional."""
+    fast_ema = calculate_ema(series, fast_period)
+    slow_ema = calculate_ema(series, slow_period)
+    macd = fast_ema - slow_ema
+    signal = macd.ewm(span=signal_period, adjust=False).mean()
+    return macd, signal
+
+def calculate_bbands(series, period, std_dev):
+    """Calcula las Bandas de Bollinger suavizadas."""
+    sma = series.rolling(window=period, min_periods=1).mean()
+    std = series.rolling(window=period, min_periods=1).std()
+    upper_band = sma + (std_dev * std)
+    lower_band = sma - (std_dev * std)
+    return upper_band, sma, lower_band
+
+def calculate_adx(data, period=14):
+    """Calcula el ADX (Average Directional Index) suavizado."""
+    high = data['high']
+    low = data['low']
+    close = data['close']
+    plus_dm = high.diff().clip(lower=0)
+    minus_dm = -low.diff().clip(lower=0)
+    tr = (high - low).combine(abs(high - close.shift()), max).combine(abs(low - close.shift()), max)
+    atr = tr.rolling(window=period, min_periods=1).mean()
+    plus_di = 100 * (plus_dm.rolling(window=period, min_periods=1).mean() / (atr + 1e-10))
+    minus_di = 100 * (minus_dm.rolling(window=period, min_periods=1).mean() / (atr + 1e-10))
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)) * 100
+    adx = dx.rolling(window=period, min_periods=1).mean()
+    return adx, plus_di, minus_di
+
+def calculate_atr(data, period=14):
+    """Calcula el ATR (Average True Range) suavizado."""
+    high = data['high']
+    low = data['low']
+    close = data['close']
+    tr = (high - low).combine(abs(high - close.shift()), max).combine(abs(low - close.shift()), max)
+    return tr.rolling(window=period, min_periods=1).mean()
+
+def calculate_cci(data, period=20):
+    """Calcula el Índice de Canal de Materias Primas (CCI) suavizado."""
+    typical_price = (data['high'] + data['low'] + data['close']) / 3
+    sma = typical_price.rolling(window=period, min_periods=1).mean()
+    mean_deviation = (typical_price - sma).abs().rolling(window=period, min_periods=1).mean()
+    cci = (typical_price - sma) / (0.015 * (mean_deviation + 1e-10))
+    return cci
+
+def calculate_momentum(series, period=14):
+    """Calcula el Momentum suavizado."""
+    momentum = series - series.shift(period)
+    return momentum.rolling(window=period, min_periods=1).mean()
+
+# Detectar microtendencia
+# Detectar microtendencia con condiciones relajadas
+def detect_microtrend(data):
+    """Detecta microtendencias con indicadores suavizados."""
+    data['ema10'] = calculate_ema(data['close'], 10)  # EMA rápida
+    data['ema30'] = calculate_ema(data['close'], 30)  # EMA lenta
+    data['rsi'] = calculate_rsi(data['close'], 14)
+    data['macd'], data['signal'] = calculate_macd(data['close'], 12, 26, 9)
+    data['upper_band'], _, data['lower_band'] = calculate_bbands(data['close'], 20, 2)
+    data['adx'], data['plus_di'], data['minus_di'] = calculate_adx(data)
+    data['atr'] = calculate_atr(data)
+    data['cci'] = calculate_cci(data)
+    data['momentum'] = calculate_momentum(data['close'])
+
+    last_row = data.iloc[-1]
+
+    # Registrar valores para diagnóstico
+    print(f"Valores actuales: EMA10={last_row['ema10']:.2f}, EMA30={last_row['ema30']:.2f}, "
+          f"RSI={last_row['rsi']:.2f}, MACD={last_row['macd']:.2f}, Signal={last_row['signal']:.2f}, "
+          f"Close={last_row['close']:.2f}, UpperBand={last_row['upper_band']:.2f}, "
+          f"LowerBand={last_row['lower_band']:.2f}, ADX={last_row['adx']:.2f}, "
+          f"ATR={last_row['atr']:.2f}, CCI={last_row['cci']:.2f}, Momentum={last_row['momentum']:.2f}")
+
+    # Detectar microtendencia alcista
+    if (last_row['ema10'] > last_row['ema30'] and
+        last_row['rsi'] > 40 and  # Más tolerante
+        last_row['macd'] > last_row['signal'] - 0.01 and  # Margen dinámico
+        last_row['adx'] > 15 and  # Más sensible
+        last_row['plus_di'] > last_row['minus_di'] * 0.95 and  # Margen dinámico en DI
+        last_row['close'] > last_row['upper_band'] * 0.98 and  # Margen dinámico en Bollinger
+        last_row['cci'] > 30 and  # Relajar CCI
+        last_row['momentum'] > -0.5):  # Permitir ligeras desviaciones
+        return last_row, 'Alcista'
+
+    # Detectar microtendencia bajista
+    if (last_row['ema10'] < last_row['ema30'] and
+        last_row['rsi'] < 60 and  # Más tolerante
+        last_row['macd'] < last_row['signal'] + 0.01 and  # Margen dinámico
+        last_row['adx'] > 15 and  # Más sensible
+        last_row['minus_di'] > last_row['plus_di'] * 1.05 and  # Margen dinámico en DI
+        last_row['close'] < last_row['lower_band'] * 1.02 and  # Margen dinámico en Bollinger
+        last_row['cci'] < -30 and  # Relajar CCI
+        last_row['momentum'] < 0.5):  # Permitir ligeras desviaciones
+        return last_row, 'Bajista'
+
+    return last_row, 'Neutral'
+
+
+
+
+# Ejecutar operaciones
+# Lista global para rastrear las órdenes abiertas
+open_orders = []
+
+def execute_trade(last_row, symbol, capital_assigned, risk_per_trade=0.5):
+    global open_orders
+
+    # Monitorear y limpiar órdenes cerradas
+    if open_orders:
+        closed_orders = []
+        positions = mt5.positions_get()
+
+        for order in open_orders:
+            # Verificar si la orden sigue activa
+            if not any(pos.ticket == order for pos in positions):
+                print(f"La operación con Ticket: {order} ha sido cerrada.")
+                closed_orders.append(order)
+
+        # Remover órdenes cerradas de la lista
+        open_orders = [order for order in open_orders if order not in closed_orders]
+
+    # Si todavía hay órdenes abiertas, no se ejecutan nuevas operaciones
+    if open_orders:
+        print("Aún hay órdenes abiertas. Esperando a que se cierren antes de enviar nuevas operaciones.")
+        return None
+
+    # 0 para BUY, 1 para SELL
+    if last_row['ema5'] > last_row['ema13']:
+        order_type = 0  # BUY
+    elif last_row['ema5'] < last_row['ema13']:
+        order_type = 1  # SELL
+    else:
+        print("No se ejecutó ninguna operación. Las EMAs no indican una tendencia clara.")
+        return None
+
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        print(f"Error: Información no encontrada para el símbolo {symbol}.")
+        return None
+
+    price = last_row['close']
+    if not price or price <= 0:
+        print(f"Error: Precio inválido para el símbolo {symbol}.")
+        return None
+
+    contract_size = getattr(symbol_info, 'contract_size', 1)
+    try:
+        lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
+        lot_size = max(
+            min(
+                round(lot_size / symbol_info.volume_step) * symbol_info.volume_step,
+                symbol_info.volume_max,
+            ),
+            symbol_info.volume_min,
+        )
+    except (ZeroDivisionError, AttributeError) as e:
+        print(f"Error al calcular el tamaño del lote: {e}")
+        return None
+
+    tp_percentage = 0.001 / 100
+    tp_price = price * (1 + tp_percentage) if order_type == 0 else price * (1 - tp_percentage)
+
+    requests = []
+    for i in range(5):
+        requests.append({
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": order_type,
+            "price": price,
+            "tp": tp_price,
+            "deviation": 2,
+            "magic": 234002,
+            "comment": f"Scalping {i + 1}/5",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        })
+
+    results = []
+    for request in requests:
+        result = mt5.order_send(request)
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"Operación ejecutada correctamente. Ticket: {result.order}")
+            open_orders.append(result.order)
+            results.append(result.order)
+        else:
+            print(f"Error al ejecutar la operación: {result.retcode}")
+
+    return results if results else None
+
+
+
+
+    
+
+# Bucle principal dentro de una función
+def main_loop():
+    global previous_trend
+
+    # Conectar a MetaTrader 5
+    if not connect_to_mt5():
+        logging.error("No se pudo conectar a MT5. Cerrando el programa.")
+        return
+
+    # Obtener balance y margen libre
+    balance, free_margin = get_account_equity()
+    if free_margin is None:
+        logging.error("No se puede proceder sin margen libre.")
+        return
+
+    # Usar un símbolo predefinido
+    symbol = "BTCUSDm"  # Define aquí el símbolo único
+    symbols = [symbol]  # Lista de símbolos basada en el símbolo único
+
+    # Calcular distribución de capital
+    capital_distribution = calculate_risk_and_capital_distribution(symbols, free_margin)
+    if capital_distribution is None:
+        logging.error("No se pudo calcular la distribución de capital.")
+        return
+
+    while True:
+        try:
+            # Procesar el símbolo único en un bucle
+            data = get_data(symbol, timeframe, num_bars)
+            last_row, trend = detect_microtrend(data)
+
+            logging.info(f"Microtendencia actual en {symbol}: {trend}")
+
+            # Ejecutar operaciones si hay una tendencia válida
+            if trend in ['Alcista', 'Bajista']:
+                # Enviar operación en cada iteración si hay una tendencia válida
+                result = execute_trade(last_row, symbol, capital_assigned=capital_distribution.get(symbol, 1000))
+
+                if result:
+                    logging.info(f"Operación enviada correctamente para {symbol}.")
+                else:
+                    logging.warning(f"No se pudo enviar la operación para {symbol}.")
+            else:
+                logging.info("No se detectó una señal clara. Esperando nueva oportunidad...")
+
+            # Esperar antes de la próxima iteración
+            time.sleep(30)
+
+        except Exception as e:
+            logging.error(f"Error en el bucle principal: {e}")
+
+# Llamar a la función principal
+if __name__ == "__main__":
+    main_loop()
