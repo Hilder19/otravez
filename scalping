@@ -1,155 +1,54 @@
-def calculate_indicators(df):
-    """Calcula indicadores optimizados para scalping."""
-    # MACD ultrarrápido para movimientos de segundos
-    df['ema_fast'] = df['close'].ewm(span=3, adjust=False).mean()
-    df['ema_slow'] = df['close'].ewm(span=8, adjust=False).mean()
-    df['macd'] = df['ema_fast'] - df['ema_slow']
-    df['macd_signal'] = df['macd'].ewm(span=3, adjust=False).mean()
-    df['macd_diff'] = df['macd'] - df['macd_signal']
+import MetaTrader5 as mt5
+import pandas as pd
+import talib as ta
+import time
 
-    # RSI hiperreactivo
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
-    avg_gain = gain.ewm(span=3, adjust=False).mean()
-    avg_loss = loss.ewm(span=3, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+# Conectar a MetaTrader 5
+mt5.initialize()
 
-    # ADX con periodos ultracortos
-    df['tr'] = df[['high', 'low', 'close']].apply(
-        lambda row: max(row['high'] - row['low'],
-                        abs(row['high'] - row['close']),
-                        abs(row['low'] - row['close'])), axis=1
-    )
-    df['atr'] = df['tr'].ewm(span=5, adjust=False).mean()
-    df['+dm'] = df['high'].diff().clip(lower=0)
-    df['-dm'] = -df['low'].diff().clip(lower=0)
-    df['+di'] = 100 * (df['+dm'] / df['atr']).ewm(span=5, adjust=False).mean()
-    df['-di'] = 100 * (df['-dm'] / df['atr']).ewm(span=5, adjust=False).mean()
-    df['adx'] = 100 * (abs(df['+di'] - df['-di']) / (df['+di'] + df['-di'])).ewm(span=5, adjust=False).mean()
-    df['adx_slope'] = df['adx'].diff()
+# Configurar el símbolo (par de divisas), el intervalo y la cantidad de datos históricos
+symbol = "EURUSD"
+timeframe = mt5.TIMEFRAME_M1  # Gráfico de 1 minuto (M1)
+num_bars = 200  # Últimos 200 datos de barras
 
-    # Bollinger Bands para scalping
-    df['sma'] = df['close'].rolling(window=7).mean()
-    df['std'] = df['close'].rolling(window=7).std()
-    df['upper_band'] = df['sma'] + (df['std'] * 1.5)
-    df['lower_band'] = df['sma'] - (df['std'] * 1.5)
+# Función para obtener los datos históricos
+def get_data(symbol, timeframe, num_bars):
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    data = pd.DataFrame(rates)
+    data['time'] = pd.to_datetime(data['time'], unit='s')
+    return data
 
-    df.fillna(0, inplace=True)
-    return df
+# Función para detectar microtendencias alcistas o bajistas
+def detect_microtrend(data):
+    # Calcular indicadores: EMA, RSI, MACD, Bandas de Bollinger
+    data['ema5'] = ta.EMA(data['close'], timeperiod=5)
+    data['ema13'] = ta.EMA(data['close'], timeperiod=13)
+    data['rsi'] = ta.RSI(data['close'], timeperiod=14)
+    macd, signal, _ = ta.MACD(data['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+    data['macd'] = macd
+    data['signal'] = signal
+    upper_band, middle_band, lower_band = ta.BBANDS(data['close'], timeperiod=20)
 
-def generate_signal(row):
-    """Genera señales optimizadas para operaciones de scalping."""
-    buy_conditions = 0
-    sell_conditions = 0
+    # Detectar microtendencias
+    last_row = data.iloc[-1]
 
-    # Condiciones de compra
-    if row['macd_diff'] > 0:
-        buy_conditions += 1
-    if row['rsi'] < 45:
-        buy_conditions += 1
-    if row['adx'] > 10:
-        buy_conditions += 1
-    if row['close'] < row['lower_band']:
-        buy_conditions += 1
+    # Detectar microtendencia alcista (EMA cruce, RSI, MACD, Bandas de Bollinger)
+    if last_row['ema5'] > last_row['ema13'] and last_row['rsi'] > 50 and last_row['macd'] > last_row['signal'] and last_row['close'] > upper_band[-1]:
+        return 'Alcista'
+    
+    # Detectar microtendencia bajista (EMA cruce, RSI, MACD, Bandas de Bollinger)
+    if last_row['ema5'] < last_row['ema13'] and last_row['rsi'] < 50 and last_row['macd'] < last_row['signal'] and last_row['close'] < lower_band[-1]:
+        return 'Bajista'
+    
+    return 'Neutral'
 
-    # Condiciones de venta
-    if row['macd_diff'] < 0:
-        sell_conditions += 1
-    if row['rsi'] > 55:
-        sell_conditions += 1
-    if row['adx'] > 10:
-        sell_conditions += 1
-    if row['close'] > row['upper_band']:
-        sell_conditions += 1
+# Bucle principal para monitorear el mercado en tiempo real
+while True:
+    data = get_data(symbol, timeframe, num_bars)
+    trend = detect_microtrend(data)
+    
+    print(f"Microtendencia actual en {symbol}: {trend}")
+    
+    # Esperar 1 minuto antes de obtener nuevos datos
+    time.sleep(60)
 
-    # Generación de señales inmediatas
-    if buy_conditions >= 1:
-        return 'buy'
-    elif sell_conditions >= 1:
-        return 'sell'
-    return 'hold'
-
-
-
-
-
-def execute_trade(latest_signal, symbol, capital_assigned, risk_per_trade=0.5, max_open_trades=5):
-    """Ejecuta operaciones rápidas para scalping, con un límite configurable de operaciones abiertas."""
-
-    # Solicitar al usuario el número máximo de operaciones abiertas si no se proporciona
-    if max_open_trades is None:
-        try:
-            max_open_trades = int(input("Ingrese el número máximo de operaciones abiertas permitidas: "))
-        except ValueError:
-            print("Valor inválido. El límite predeterminado será 5.")
-            max_open_trades = 5
-
-    # Verificar si hay más operaciones abiertas que el límite
-    open_positions = mt5.positions_total()
-    if open_positions >= max_open_trades:
-        print(f"Límite de {max_open_trades} operaciones abiertas alcanzado. No se puede ejecutar una nueva operación.")
-        return None
-
-    order_type = 0 if latest_signal == 'buy' else 1 if latest_signal == 'sell' else None
-    if order_type is None:
-        print("No se ejecutó ninguna operación. Señal inválida.")
-        return None
-
-    symbol_info = mt5.symbol_info(symbol)
-    if not symbol_info:
-        print(f"Error: Información no encontrada para el símbolo {symbol}.")
-        return None
-
-    # Validar si 'capital_assigned' es un diccionario
-    if isinstance(capital_assigned, dict):
-        # Extraer el capital asignado para el símbolo actual
-        if symbol in capital_assigned:
-            capital_assigned = capital_assigned[symbol]
-        else:
-            print(f"Error: No se encontró capital asignado para el símbolo {symbol}.")
-            return None
-
-    # Validar que el atributo 'contract_size' exista
-    contract_size = getattr(symbol_info, 'contract_size', 1)  # Usar 1 como valor por defecto si no existe
-    if contract_size <= 0:
-        print(f"Error: Tamaño del contrato inválido para {symbol}.")
-        return None
-
-    # Obtener el precio actual
-    price = mt5.symbol_info_tick(symbol).ask if latest_signal == 'buy' else mt5.symbol_info_tick(symbol).bid
-    if not price or price <= 0:
-        print(f"Error: Precio inválido para el símbolo {symbol}.")
-        return None
-
-    # Calcular el tamaño del lote
-    try:
-        lot_size = (capital_assigned * (risk_per_trade / 100)) / (contract_size * price)
-        lot_size = max(min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max), symbol_info.volume_min)
-    except (ZeroDivisionError, AttributeError) as e:
-        print(f"Error al calcular el tamaño del lote: {e}")
-        return None
-
-    # Crear solicitud de orden
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot_size,
-        "type": order_type,
-        "price": price,
-        "deviation": 2,
-        "magic": 234002,
-        "comment": "Estrategia scalping",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-
-    # Enviar orden
-    result = mt5.order_send(request)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Error al ejecutar la operación: {result.retcode}")
-        return None
-
-    print(f"Operación {latest_signal} ejecutada correctamente. Ticket: {result.order}")
-    return result.order
