@@ -310,69 +310,74 @@ def execute_trade_multiple(latest_signals, symbols, capital_assigned, risk_per_t
 
     results = []
 
-    for symbol in symbols:
-        # Verificar si hay una operación activa para el símbolo
-        positions = mt5.positions_get(symbol=symbol)
-        if positions and len(positions) > 0:
-            print(f"El símbolo {symbol} ya tiene una operación activa. Esperando para abrir otra.")
-            continue
+    # Iterar solo sobre los símbolos con señales válidas
+    for symbol, signal in latest_signals.items():
+        try:
+            # Verificar si hay una operación activa para el símbolo
+            positions = mt5.positions_get(symbol=symbol)
+            if positions and len(positions) > 0:
+                logging.info(f"El símbolo {symbol} ya tiene una operación activa. Esperando para abrir otra.")
+                continue
 
-        # Obtener la señal más reciente para el símbolo
-        signal = latest_signals.get(symbol)
-        if not signal:
-            print(f"No hay señales disponibles para el símbolo {symbol}.")
-            continue
+            # Obtener el capital asignado al símbolo actual
+            symbol_capital = capital_assigned.get(symbol, 0)
+            if symbol_capital <= 0:
+                logging.warning(f"El capital asignado para el símbolo {symbol} es insuficiente.")
+                continue
 
-        # Obtener el capital asignado al símbolo actual
-        symbol_capital = capital_assigned.get(symbol, 0)
-        if symbol_capital <= 0:
-            print(f"El capital asignado para el símbolo {symbol} es insuficiente.")
-            continue
+            # Validar la información del símbolo
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                logging.error(f"No se pudo obtener información para el símbolo {symbol}.")
+                continue
 
-        # Calcular Take Profit (TP) basado en el precio actual
-        tick_info = mt5.symbol_info_tick(symbol)
-        if not tick_info:
-            print(f"No se pudo obtener información del precio para {symbol}.")
-            continue
+            # Obtener el precio actual
+            tick_info = mt5.symbol_info_tick(symbol)
+            if not tick_info:
+                logging.error(f"No se pudo obtener información del precio para {symbol}.")
+                continue
 
-        price = tick_info.ask if signal == 'buy' else tick_info.bid
-        tp_percentage = 0.001  # Porcentaje de TP (0.1% del precio actual)
-        tp = price * (1 + tp_percentage) if signal == 'buy' else price * (1 - tp_percentage)
-        tp = round(tp, 5)
+            price = tick_info.ask if signal == 'buy' else tick_info.bid
+            tp_percentage = 0.0001  # Porcentaje de TP (0.1% del precio actual)
+            tp = price * (1 + tp_percentage) if signal == 'buy' else price * (1 - tp_percentage)
+            tp = round(tp, symbol_info.digits)
 
-        # Calcular tamaño del lote
-        risk_amount = symbol_capital * (risk_per_trade / 100)
-        lot_size = risk_amount / price  # Simplificación para cálculos de lotes
-        lot_size = round(lot_size, 2)
+            # Calcular tamaño del lote
+            risk_amount = symbol_capital * (risk_per_trade / 100)
+            lot_size = risk_amount / price
 
-        # Preparar la operación
-        action_type = mt5.ORDER_TYPE_BUY if signal == 'buy' else mt5.ORDER_TYPE_SELL
-        order_request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": lot_size,
-            "type": action_type,
-            "price": price,
-            "tp": tp,
-            "deviation": 2,
-            "magic": 123456,
-            "comment": "Scalping Trade",
-        }
+            # Ajustar el tamaño del lote para cumplir con las restricciones del bróker
+            lot_size = max(
+                symbol_info.volume_min,
+                min(round(lot_size / symbol_info.volume_step) * symbol_info.volume_step, symbol_info.volume_max)
+            )
 
-        # Ejecutar la operación
-        result = mt5.order_send(order_request)
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"Operación realizada: {symbol}, Acción: {signal}, Volumen: {lot_size}, TP: {tp}")
-            results.append(result)
-        else:
-            print(f"Error al ejecutar operación en {symbol}: {result.comment}")
+            # Preparar la operación
+            action_type = mt5.ORDER_TYPE_BUY if signal == 'buy' else mt5.ORDER_TYPE_SELL
+            order_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lot_size,
+                "type": action_type,
+                "price": price,
+                "tp": tp,
+                "deviation": 2,
+                "magic": 123456,
+                "comment": "Scalping Trade",
+            }
+
+            # Ejecutar la operación
+            result = mt5.order_send(order_request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                logging.info(f"Operación realizada: {symbol}, Acción: {signal}, Volumen: {lot_size}, TP: {tp}")
+                results.append(result)
+            else:
+                logging.error(f"Error al ejecutar operación en {symbol}: {result.comment}")
+
+        except Exception as e:
+            logging.error(f"Error procesando el símbolo {symbol}: {e}")
 
     return results
-
-
-
-
-
 
 
 
@@ -471,6 +476,10 @@ def obtener_beneficio_total():
 
 
 
+import logging
+import time
+import MetaTrader5 as mt5
+
 def main():
     """Función principal."""
     # Configuración de logging
@@ -511,49 +520,54 @@ def main():
         mt5.shutdown()
         return
 
-    while True:
-        # Crear un diccionario para almacenar las señales de todos los símbolos
-        latest_signals = {}
+    try:
+        while True:
+            # Crear un diccionario para almacenar las señales de todos los símbolos
+            latest_signals = {}
 
-        for symbol in symbols:
-            # Obtener datos de mercado
-            df = fetch_market_data(symbol, timeframe)
-            if df is None:
-                logging.warning(f"No se pudo obtener datos de mercado para {symbol}.")
-                continue
+            for symbol in symbols:
+                # Obtener datos de mercado
+                df = fetch_market_data(symbol, timeframe)
+                if df is None:
+                    logging.warning(f"No se pudo obtener datos de mercado para {symbol}.")
+                    continue
 
-            # Calcular indicadores
-            df = calculate_indicators(df)
-            df['signal'] = df.apply(generate_signal, axis=1)
+                # Calcular indicadores
+                df = calculate_indicators(df)
+                df['signal'] = df.apply(generate_signal, axis=1)
 
-            # Generar la última señal para el símbolo actual
-            latest_signal = df['signal'].iloc[-1]
+                # Generar la última señal para el símbolo actual
+                latest_signal = df['signal'].iloc[-1]
 
-            # Almacenar la señal en el diccionario
-            latest_signals[symbol] = latest_signal
+                # Almacenar la señal en el diccionario
+                latest_signals[symbol] = latest_signal
 
-        # Filtrar las señales válidas (solo 'buy' y 'sell')
-        valid_signals = {symbol: signal for symbol, signal in latest_signals.items() if signal in ['buy', 'sell']}
+            # Filtrar las señales válidas (solo 'buy' y 'sell')
+            valid_signals = {symbol: signal for symbol, signal in latest_signals.items() if signal in ['buy', 'sell']}
 
-        # Ejecutar operaciones para todos los símbolos con señales válidas
-        if valid_signals:
-            execute_trade_multiple(valid_signals, symbols, capital_assigned, risk_per_trade=0.5)
+            # Ejecutar operaciones para todos los símbolos con señales válidas
+            if valid_signals:
+                execute_trade_multiple(valid_signals, list(valid_signals.keys()), capital_assigned, risk_per_trade=0.5)
 
-        # Mostrar ganancias/pérdidas de las operaciones
-        obtener_beneficio_total()
+            # Mostrar ganancias/pérdidas de las operaciones
+            obtener_beneficio_total()
 
-        # Actualizar el equity de la cuenta en cada iteración
-        equity = get_account_equity()
-        if equity is None:
-            logging.error("No se pudo actualizar el equity de la cuenta. Terminando ejecución.")
-            break           
-        logging.info(f"Equity actualizado: {equity}")
+            # Actualizar el equity de la cuenta en cada iteración
+            equity = get_account_equity()
+            if equity is None:
+                logging.error("No se pudo actualizar el equity de la cuenta. Terminando ejecución.")
+                break           
+            logging.info(f"Equity actualizado: {equity}")
 
-        # Esperar antes de repetir el ciclo
-        time.sleep(5)
+            # Esperar antes de repetir el ciclo
+            time.sleep(5)
 
-    # Cerrar conexión
-    mt5.shutdown()
+    except KeyboardInterrupt:
+        logging.info("Ejecución interrumpida por el usuario.")
+
+    finally:
+        # Cerrar conexión
+        mt5.shutdown()
 
 if __name__ == "__main__":
     main()
