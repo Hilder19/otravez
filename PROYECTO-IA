@@ -1,0 +1,92 @@
+import tensorflow as tf
+from tensorflow.keras.layers import Input, LSTM, Dense, Attention, Dropout
+from tensorflow.keras.models import Model
+import numpy as np
+
+def create_hybrid_model(input_shape):
+    # Entrada de datos
+    inputs = Input(shape=input_shape)
+    
+    # Módulo LSTM
+    x = LSTM(64, return_sequences=True)(inputs)  # Captura relaciones locales
+    x = Dropout(0.2)(x)
+    
+    # Módulo de Atención Ligera
+    query = Dense(64)(x)  # Representación de consulta
+    key = Dense(64)(x)    # Representación de clave
+    value = Dense(64)(x)  # Representación de valor
+    
+    attention_output = Attention()([query, key, value])  # Atención ligera
+    x = tf.keras.layers.Concatenate()([x, attention_output])  # Combina señales
+    
+    # Capa final (Densa)
+    x = Dense(128, activation="relu")(x)
+    x = Dropout(0.2)(x)
+    outputs = Dense(1, activation="sigmoid")(x)  # Salida binaria (probabilidad)
+    
+    # Construcción del modelo
+    model = Model(inputs, outputs)
+    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+    return model
+
+# Preprocesamiento de datos para ventanas fijas y etiquetas binarias
+def prepare_fixed_time_data_with_labels(data, window_size, future_offset, tp):
+    """
+    Genera ventanas de tiempo fijo para los datos y etiquetas binarias.
+
+    Args:
+        data: ndarray de forma (num_samples, num_features).
+        window_size: Número de pasos temporales (ventana fija).
+        future_offset: Desplazamiento hacia el futuro (en pasos temporales).
+        tp: Take profit (umbral para etiquetar subidas o bajadas).
+
+    Returns:
+        ventanas: ndarray de forma (num_ventanas, window_size, num_features).
+        etiquetas: ndarray de forma (num_ventanas,), donde:
+                   1 = el precio cubre el precio actual + tp (compra) o el precio actual - tp (venta),
+                   0 = el precio no cubre ninguno de los dos casos.
+    """
+    num_samples, num_features = data.shape
+    ventanas = []
+    etiquetas = []
+    
+    for i in range(num_samples - window_size - future_offset + 1):
+        # Crear ventana
+        ventanas.append(data[i:i + window_size])
+        
+        # Calcular precios actuales y futuros
+        precio_actual = data[i + window_size - 1, 0]  # Precio actual (último valor de la ventana)
+        precio_futuro = data[i + window_size + future_offset - 1, 0]  # Precio futuro
+        
+        # Etiquetar: 1 si se cumple compra o venta, 0 si no
+        if precio_futuro >= (precio_actual + tp) or precio_futuro <= (precio_actual - tp):
+            etiquetas.append(1)  # Compra o venta
+        else:
+            etiquetas.append(0)  # No acción
+    
+    return tf.convert_to_tensor(ventanas), tf.convert_to_tensor(etiquetas)
+
+# Parámetros del modelo
+input_shape = (50, 5)  # 50 pasos temporales (5 segundos a 10 Hz) con 5 características
+
+# Crear el modelo
+model = create_hybrid_model(input_shape)
+model.summary()
+
+# Simulación de datos para pruebas
+np.random.seed(42)  # Fijar semilla para reproducibilidad
+data = np.random.rand(1000, 5)  # 1000 muestras con 5 características
+
+# Crear ventanas de tiempo fijo y etiquetas binarias
+window_size = 50  # Ventana de 50 pasos
+future_offset = 50  # Desplazamiento de 5 segundos en el futuro (50 pasos a 10 Hz)
+tp = 0.0001  # Take profit
+ventanas, etiquetas = prepare_fixed_time_data_with_labels(data, window_size, future_offset, tp)
+
+# Verificar el resultado
+print("Ventanas generadas:", ventanas.shape)
+print("Etiquetas generadas:", etiquetas.shape)
+print("Distribución de etiquetas (clases):", np.unique(etiquetas.numpy(), return_counts=True))
+
+# Entrenamiento del modelo (ejemplo)
+model.fit(ventanas, etiquetas, epochs=10, batch_size=32)
