@@ -145,36 +145,62 @@ import numpy as np
 import logging
 
 # Configurar logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Función para obtener datos de mercado
-def fetch_market_data(symbol, timeframe, limit=10):
-    """Obtiene datos de mercado desde MT5."""
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
-    if rates is None:
-        logging.error(f"Error al obtener datos para {symbol}: {mt5.last_error()}")
-        return None
-
-    df = pd.DataFrame(rates)
-    df['time'] = pd.to_datetime(df['time'], unit='s')
-    return df
+def fetch_market_data(symbol, timeframe, limit=10, interval=5, analyze=False):
+    """
+    Obtiene datos de mercado desde MT5 y realiza análisis en tiempo real si se habilita.
+    
+    :param symbol: El símbolo del instrumento financiero (e.g., 'EURUSD').
+    :param timeframe: El marco temporal (e.g., mt5.TIMEFRAME_M1).
+    :param limit: Número de barras a obtener.
+    :param interval: Intervalo en segundos entre actualizaciones.
+    :param analyze: Si True, realiza análisis en tiempo real.
+    :return: DataFrame con los datos de mercado si analyze=False. Ninguno en modo de análisis.
+    """
+    if analyze:
+        logging.info(f"Iniciando análisis en tiempo real para {symbol}. Presiona Ctrl+C para detener.")
+        try:
+            while True:
+                rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
+                if rates is None:
+                    logging.error(f"Error al obtener datos para {symbol}: {mt5.last_error()}")
+                else:
+                    df = pd.DataFrame(rates)
+                    df['time'] = pd.to_datetime(df['time'], unit='s')
+                    
+                    # Aquí se puede realizar análisis con los datos obtenidos.
+                    logging.info(f"Últimos datos para {symbol}:\n{df}")
+                
+                time.sleep(interval)  # Pausa entre actualizaciones.
+        except KeyboardInterrupt:
+            logging.info("Análisis en tiempo real detenido por el usuario.")
+        except Exception as e:
+            logging.error(f"Se produjo un error: {e}")
+        finally:
+            logging.info("Cerrando análisis.")
+    else:
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, limit)
+        if rates is None:
+            logging.error(f"Error al obtener datos para {symbol}: {mt5.last_error()}")
+            return None
+        
+        df = pd.DataFrame(rates)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        return df
 
 # Función para calcular indicadores
 def calculate_indicators(df):
     """Calcula indicadores optimizados para scalping (sin TA-Lib)."""
     # Bollinger Bands
-    df['sma'] = df['close'].rolling(window=7).mean()
-    df['std'] = df['close'].rolling(window=7).std()
-    df['upper_band'] = df['sma'] + (df['std'] * 1.5)
-    df['lower_band'] = df['sma'] - (df['std'] * 1.5)
+    df['sma'] = df['close'].rolling(window=5).mean()
+    df['std'] = df['close'].rolling(window=5).std()
+    df['upper_band'] = df['sma'] + (df['std'] * 2)
+    df['lower_band'] = df['sma'] - (df['std'] * 2)
 
     # Chaikin Volatility
     df['high_low_diff'] = df['high'] - df['low']
     df['chaikin_volatility'] = df['high_low_diff'].ewm(span=3, adjust=False).mean().diff()
-
-    # Donchian Channels
-    df['donchian_high'] = df['high'].rolling(window=14).max()
-    df['donchian_low'] = df['low'].rolling(window=14).min()
 
     # ATR (Average True Range)
     df['tr'] = df[['high', 'low', 'close']].apply(
@@ -182,14 +208,14 @@ def calculate_indicators(df):
                         abs(row['high'] - row['close']), 
                         abs(row['low'] - row['close'])), axis=1
     )
-    df['atr'] = df['tr'].rolling(window=14).mean()
+    df['atr'] = df['tr'].rolling(window=7).mean()
 
     # RSI (Relative Strength Index)
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
+    avg_gain = gain.rolling(window=7).mean()
+    avg_loss = loss.rolling(window=7).mean()
     rs = avg_gain / avg_loss
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -204,23 +230,6 @@ def calculate_indicators(df):
     df['slowk'] = ((df['close'] - df['low'].rolling(window=14).min()) / 
                    (df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min())) * 100
     df['slowd'] = df['slowk'].rolling(window=3).mean()
-
-    # ADX (Average Directional Index)
-    df['up_move'] = df['high'].diff()
-    df['down_move'] = -df['low'].diff()
-    df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
-    df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
-    df['plus_di'] = (df['plus_dm'].ewm(span=14, adjust=False).mean() / df['atr']) * 100
-    df['minus_di'] = (df['minus_dm'].ewm(span=14, adjust=False).mean() / df['atr']) * 100
-    df['adx'] = (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])).rolling(window=14).mean() * 100
-
-    # CCI (Commodity Channel Index)
-    tp = (df['high'] + df['low'] + df['close']) / 3
-    df['cci'] = (tp - tp.rolling(window=14).mean()) / (0.015 * tp.rolling(window=14).std())
-
-    # Williams %R
-    df['williams_r'] = ((df['high'].rolling(window=14).max() - df['close']) / 
-                        (df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min())) * -100
 
     df.fillna(0, inplace=True)
     return df
@@ -238,18 +247,20 @@ def generate_signal(symbol, timeframe, limit=10):
     buy_conditions = 0
     sell_conditions = 0
 
+    # Condiciones para compra
     if last_row['close'] < last_row['lower_band']:
-        buy_conditions += 1
-    if last_row['chaikin_volatility'] > 0:
         buy_conditions += 1
     if last_row['rsi'] < 30:
         buy_conditions += 1
+    if last_row['atr'] > df['atr'].mean():
+        buy_conditions += 1
 
+    # Condiciones para venta
     if last_row['close'] > last_row['upper_band']:
         sell_conditions += 1
-    if last_row['chaikin_volatility'] < 0:
-        sell_conditions += 1
     if last_row['rsi'] > 70:
+        sell_conditions += 1
+    if last_row['atr'] > df['atr'].mean():
         sell_conditions += 1
 
     if buy_conditions >= 2:
@@ -257,6 +268,7 @@ def generate_signal(symbol, timeframe, limit=10):
     elif sell_conditions >= 2:
         return 'sell'
     return 'hold'
+
 
 
 
@@ -450,7 +462,7 @@ def obtener_beneficio_total():
     if not deals:
         print("No hay operaciones en el historial dentro del rango especificado.")
         print("Error:", mt5.last_error())
-        mt5.shutdown()
+        
         return
 
     resultados = []
